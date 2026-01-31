@@ -1,0 +1,27 @@
+{
+  "_comment_purpose": "Single source of truth for hardware configuration, shared by consumer app and hardwareService.",
+  "_comment_configVersion": "Bump configVersion when adding/removing required fields or changing schema structure.",
+  "_comment_serialNumber": "Optional serial number for exact device matching. Use null for type-based matching. Fill in for multiple boards of same type.",
+  "_comment_name": "CRITICAL: Unique receiver name used throughout the system. This name MUST match keys in config/config.json for tcpPorts and telemetryPriority! Use unique names for multiple boards of same type (e.g., 'X5-Primary', 'X5-Backup').",
+  "_comment_oscope": "hardwareService loads this single oscope configuration.",
+  "_comment_ppsWiring": "Physical PPS channel wiring. Each entry has 'name' (signal label) and 'editable' (user can rename). Connected receivers should have editable=false.",
+
+  "configVersion": "1.0",
+  "hardware": {
+    "receivers": [
+      {"type": "X5", "serialNumber": null, "name": "X5"},
+      {"type": "F9", "serialNumber": null, "name": "F9"}
+    ],
+    "oscope": {"type": "digital", "triggerChannel": 0}
+  },
+  "ppsWiring": {
+    "0": {"name": "PPS In", "editable": false},
+    "1": {"name": "X5", "editable": false},
+    "2": {"name": "M9", "editable": false},
+    "3": {"name": "Channel 3", "editable": true},
+    "4": {"name": "Channel 4", "editable": true},
+    "5": {"name": "Channel 5", "editable": true},
+    "6": {"name": "Channel 6", "editable": true},
+    "7": {"name": "Channel 7", "editable": true}
+  }
+}

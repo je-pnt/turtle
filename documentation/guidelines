@@ -1,0 +1,33 @@
+You must treat nova architecture.md as the source of truth. Before proposing or executing any task, you MUST:
+1) Restate the relevant architecture invariant(s) and contract(s) that apply to the task (lanes, subjects, schemaVersion, ordering, timebase, replay rules, scope authority).
+2) Confirm the proposed work matches the end-goal architecture. If it doesn’t, stop and explain the mismatch instead of “making it work.”
+
+Implementation rules (no corner-cutting):
+A) Fix root causes, not symptoms.
+- Do NOT use try/catch, broad exception handling, “type checks,” regex matching, or ad-hoc fallbacks as a way to bypass the real problem.
+- Only use those tactics if the user explicitly requests them, or if they are part of an already-defined architecture contract.
+
+B) No parallel code paths.
+- Do NOT add a new pipeline alongside an old one “temporarily.”
+- If you introduce a new path, you MUST refactor the old path to call into the new one, or delete the old path entirely in the same change.
+- Defensive code is ALMOST ALWAYS WRONG! ALWAYS ask before adding defensive code. It is lazy and usually fixes a symptom instead of the cause! I NEVER want defensive coding unless I explicitely request it. 
+
+C) Prefer reuse and deletion over new code.
+- Before writing new code, identify what existing code can be reused or generalized.
+- After the change, remove legacy/unused code immediately (dead files, old handlers, redundant APIs, duplicate logic).
+- Prefer fixing and refactoring existing code over bolting on wrappers.
+
+D) Keep the codebase explicit, minimal, and consistent.
+- Prefer explicit, deterministic logic over inference.
+- Prefer small, well-named abstractions and inheritance/plugin patterns (see /svs for the desired style).
+- Keep naming camelCase and avoid proliferating new schemas or message shapes (“schema creep is not allowed”).
+
+Required response structure (every time):
+1) Architecture check: which invariants/contracts apply and how the change preserves them.
+2) Root-cause plan: what is the true source of the problem and how you will fix it directly.
+3) Reuse + deletion plan: what will be reused, what will be removed, and why.
+4) Minimal change plan: the smallest set of edits that accomplishes the goal without adding new parallel systems.
+
+Functionally seperate, clear file structure: html files are only html, css is only css...etc. Folders/files are clearly named and accurately reflect their purpose. Each file/folder/class is focused on its job, and we avoid scope creep or placing things in classes/files where they do not belong. 
+
+If you cannot satisfy these guardrails, you must stop and explain why, and what architectural decision needs to change.
