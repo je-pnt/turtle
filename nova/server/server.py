@@ -158,13 +158,18 @@ class NovaServer:
         self.app.router.add_post('/api/streams/{streamId}/unbind', self.handleUnbindStream)
         
         # Presentation API endpoints (Phase 10)
+        # No scopeId in path - server resolves from user's effective scopes
         self.app.router.add_get('/api/presentation/models', self.handleListModels)
-        self.app.router.add_get('/api/presentation/{scopeId}', self.handleGetPresentation)
-        self.app.router.add_put('/api/presentation/{scopeId}/{uniqueId}', self.handleSetPresentation)
-        self.app.router.add_delete('/api/presentation/{scopeId}/{uniqueId}', self.handleDeletePresentation)
-        self.app.router.add_get('/api/presentation/defaults/{scopeId}', self.handleGetPresentationDefaults)
-        self.app.router.add_put('/api/presentation/defaults/{scopeId}/{uniqueId}', self.handleSetPresentationDefaults)
-        self.app.router.add_delete('/api/presentation/defaults/{scopeId}/{uniqueId}', self.handleDeletePresentationDefaults)
+        self.app.router.add_get('/api/presentation', self.handleGetPresentation)
+        self.app.router.add_put('/api/presentation/{uniqueId}', self.handleSetPresentation)
+        self.app.router.add_delete('/api/presentation/{uniqueId}', self.handleDeletePresentation)
+        self.app.router.add_get('/api/presentation-default', self.handleGetPresentationDefaults)
+        self.app.router.add_put('/api/presentation-default/{uniqueId}', self.handleSetPresentationDefaults)
+        self.app.router.add_delete('/api/presentation-default/{uniqueId}', self.handleDeletePresentationDefaults)
+        
+        # Admin scope management
+        self.app.router.add_get('/api/admin/scopes', self.handleListScopes)
+        self.app.router.add_put('/api/admin/users/{userId}/scopes', self.handleSetUserScopes)
         
         # Export download endpoint
         self.app.router.add_get('/exports/{exportId}.zip', self.handleExportDownload)
@@ -1290,38 +1295,56 @@ class NovaServer:
     
     async def handleGetPresentation(self, request: web.Request) -> web.Response:
         """
-        Get presentation overrides for current user and scope.
+        Get presentation overrides for current user.
         
-        Returns resolved presentation (user > admin > factory) for all entities.
+        Query params:
+        - scopeId: optional, filter to specific scope
+        
+        If single effective scope: returns that scope's data
+        If multi scope + no scopeId: aggregates all (each item includes scopeId)
+        If multi scope + scopeId: returns that scope's data
         """
-        # Require auth
         user = self._getAuthUser(request)
         if not user:
             return web.json_response({'error': 'Unauthorized'}, status=401)
         
-        scopeId = request.match_info['scopeId']
+        scopeId, error = self._resolveRequestScope(request, user, requireForWrite=False)
+        if error:
+            return error
         
-        # Get user overrides for this scope
-        overrides = self.presentationStore.getUserOverrides(user['username'], scopeId)
-        
-        # Convert to dict format
-        result = {
-            uniqueId: pres.toDict() 
-            for uniqueId, pres in overrides.items()
-        }
-        
-        return web.json_response({
-            'scopeId': scopeId,
-            'overrides': result
-        })
+        if scopeId:
+            # Single scope
+            overrides = self.presentationStore.getUserOverrides(user['username'], scopeId)
+            result = {
+                uniqueId: {**pres.toDict(), 'scopeId': scopeId}
+                for uniqueId, pres in overrides.items()
+            }
+            return web.json_response({'overrides': result})
+        else:
+            # Multi-scope aggregation
+            effectiveScopes = self._getEffectiveScopes(user)
+            result = {}
+            for scope in effectiveScopes:
+                overrides = self.presentationStore.getUserOverrides(user['username'], scope)
+                for uniqueId, pres in overrides.items():
+                    result[uniqueId] = {**pres.toDict(), 'scopeId': scope}
+            return web.json_response({'overrides': result})
     
     async def handleSetPresentation(self, request: web.Request) -> web.Response:
-        """Set user presentation override for an entity."""
+        """
+        Set user presentation override for an entity.
+        
+        Query params:
+        - scopeId: required if user has multiple scopes
+        """
         user = self._getAuthUser(request)
         if not user:
             return web.json_response({'error': 'Unauthorized'}, status=401)
         
-        scopeId = request.match_info['scopeId']
+        scopeId, error = self._resolveRequestScope(request, user, requireForWrite=True)
+        if error:
+            return error
+        
         uniqueId = request.match_info['uniqueId']
         
         try:
@@ -1337,19 +1360,30 @@ class NovaServer:
         )
         
         if success:
-            return web.json_response({'status': 'ok'})
+            # Broadcast update to all connected clients
+            await self._broadcastPresentationUpdate(scopeId, uniqueId, data, user['username'])
+            return web.json_response({'status': 'ok', 'scopeId': scopeId})
         else:
             return web.json_response({'error': 'Invalid override data'}, status=400)
     
     async def handleDeletePresentation(self, request: web.Request) -> web.Response:
-        """Delete user presentation override."""
+        """
+        Delete user presentation override.
+        
+        Query params:
+        - scopeId: required if user has multiple scopes
+        - key: optional, delete only specific key
+        """
         user = self._getAuthUser(request)
         if not user:
             return web.json_response({'error': 'Unauthorized'}, status=401)
         
-        scopeId = request.match_info['scopeId']
+        scopeId, error = self._resolveRequestScope(request, user, requireForWrite=True)
+        if error:
+            return error
+        
         uniqueId = request.match_info['uniqueId']
-        key = request.query.get('key')  # Optional: delete specific key only
+        key = request.query.get('key')
         
         success = self.presentationStore.deleteUserOverride(
             username=user['username'],
@@ -1358,35 +1392,63 @@ class NovaServer:
             key=key
         )
         
-        return web.json_response({'status': 'ok' if success else 'not found'})
+        if success:
+            # Broadcast deletion
+            await self._broadcastPresentationUpdate(scopeId, uniqueId, None, user['username'], deleted=True)
+        
+        return web.json_response({'status': 'ok' if success else 'not found', 'scopeId': scopeId})
     
     async def handleGetPresentationDefaults(self, request: web.Request) -> web.Response:
-        """Get admin default presentation for a scope."""
-        scopeId = request.match_info['scopeId']
+        """
+        Get admin default presentations.
         
-        defaults = self.presentationStore.getAdminDefaults(scopeId)
-        
-        result = {
-            uniqueId: pres.toDict() 
-            for uniqueId, pres in defaults.items()
-        }
-        
-        return web.json_response({
-            'scopeId': scopeId,
-            'defaults': result
-        })
-    
-    async def handleSetPresentationDefaults(self, request: web.Request) -> web.Response:
-        """Set admin default presentation (admin only)."""
+        Query params:
+        - scopeId: optional, filter to specific scope
+        """
         user = self._getAuthUser(request)
         if not user:
             return web.json_response({'error': 'Unauthorized'}, status=401)
         
-        # Admin only
+        scopeId, error = self._resolveRequestScope(request, user, requireForWrite=False)
+        if error:
+            return error
+        
+        if scopeId:
+            # Single scope
+            defaults = self.presentationStore.getAdminDefaults(scopeId)
+            result = {
+                uniqueId: {**pres.toDict(), 'scopeId': scopeId}
+                for uniqueId, pres in defaults.items()
+            }
+            return web.json_response({'defaults': result})
+        else:
+            # Multi-scope aggregation
+            effectiveScopes = self._getEffectiveScopes(user)
+            result = {}
+            for scope in effectiveScopes:
+                defaults = self.presentationStore.getAdminDefaults(scope)
+                for uniqueId, pres in defaults.items():
+                    result[uniqueId] = {**pres.toDict(), 'scopeId': scope}
+            return web.json_response({'defaults': result})
+    
+    async def handleSetPresentationDefaults(self, request: web.Request) -> web.Response:
+        """
+        Set admin default presentation (admin only).
+        
+        Query params:
+        - scopeId: required if admin has multiple scopes
+        """
+        user = self._getAuthUser(request)
+        if not user:
+            return web.json_response({'error': 'Unauthorized'}, status=401)
+        
         if user.get('role') != 'admin':
             return web.json_response({'error': 'Admin required'}, status=403)
         
-        scopeId = request.match_info['scopeId']
+        scopeId, error = self._resolveRequestScope(request, user, requireForWrite=True)
+        if error:
+            return error
+        
         uniqueId = request.match_info['uniqueId']
         
         try:
@@ -1401,12 +1463,20 @@ class NovaServer:
         )
         
         if success:
-            return web.json_response({'status': 'ok'})
+            # Broadcast admin default update to all clients
+            await self._broadcastPresentationUpdate(scopeId, uniqueId, data, user['username'], isDefault=True)
+            return web.json_response({'status': 'ok', 'scopeId': scopeId})
         else:
             return web.json_response({'error': 'Invalid override data'}, status=400)
     
     async def handleDeletePresentationDefaults(self, request: web.Request) -> web.Response:
-        """Delete admin default presentation (admin only)."""
+        """
+        Delete admin default presentation (admin only).
+        
+        Query params:
+        - scopeId: required if admin has multiple scopes
+        - key: optional, delete only specific key
+        """
         user = self._getAuthUser(request)
         if not user:
             return web.json_response({'error': 'Unauthorized'}, status=401)
@@ -1414,7 +1484,10 @@ class NovaServer:
         if user.get('role') != 'admin':
             return web.json_response({'error': 'Admin required'}, status=403)
         
-        scopeId = request.match_info['scopeId']
+        scopeId, error = self._resolveRequestScope(request, user, requireForWrite=True)
+        if error:
+            return error
+        
         uniqueId = request.match_info['uniqueId']
         key = request.query.get('key')
         
@@ -1424,15 +1497,149 @@ class NovaServer:
             key=key
         )
         
-        return web.json_response({'status': 'ok' if success else 'not found'})
+        if success:
+            await self._broadcastPresentationUpdate(scopeId, uniqueId, None, user['username'], isDefault=True, deleted=True)
+        
+        return web.json_response({'status': 'ok' if success else 'not found', 'scopeId': scopeId})
+    
+    async def handleListScopes(self, request: web.Request) -> web.Response:
+        """List available scopes (admin only)."""
+        user = self._getAuthUser(request)
+        if not user:
+            return web.json_response({'error': 'Unauthorized'}, status=401)
+        
+        if user.get('role') != 'admin':
+            return web.json_response({'error': 'Admin required'}, status=403)
+        
+        serverScopes = self.config.get('allowedScopes', [self.config.get('scopeId', 'default')])
+        return web.json_response({'scopes': serverScopes})
+    
+    async def handleSetUserScopes(self, request: web.Request) -> web.Response:
+        """Set user's allowed scopes (admin only)."""
+        user = self._getAuthUser(request)
+        if not user:
+            return web.json_response({'error': 'Unauthorized'}, status=401)
+        
+        if user.get('role') != 'admin':
+            return web.json_response({'error': 'Admin required'}, status=403)
+        
+        userId = request.match_info['userId']
+        
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({'error': 'Invalid JSON'}, status=400)
+        
+        scopes = data.get('scopes')
+        if not isinstance(scopes, list):
+            return web.json_response({'error': 'scopes must be array'}, status=400)
+        
+        updated = self.authManager.userStore.updateScopes(userId, scopes)
+        if updated:
+            return web.json_response({'status': 'ok', 'user': updated})
+        else:
+            return web.json_response({'error': 'User not found'}, status=404)
+    
+    async def _broadcastPresentationUpdate(
+        self, 
+        scopeId: str, 
+        uniqueId: str, 
+        data: Optional[Dict[str, Any]], 
+        username: str,
+        isDefault: bool = False,
+        deleted: bool = False
+    ):
+        """Broadcast presentation change to all connected clients."""
+        msg = {
+            'type': 'presentationUpdate',
+            'scopeId': scopeId,
+            'uniqueId': uniqueId,
+            'data': data,
+            'username': username,
+            'isDefault': isDefault,
+            'deleted': deleted
+        }
+        
+        for connId, client in self.connections.items():
+            try:
+                # Only send to clients who can access this scope
+                clientScopes = self._getEffectiveScopes({
+                    'allowedScopes': client.role == 'admin' and ['ALL'] or []  
+                })
+                # For simplicity, broadcast to all - UI can filter
+                await client.sendMessage(msg)
+            except Exception as e:
+                self.log.warning(f"[Server] Failed to broadcast to {connId}: {e}")
     
     def _getAuthUser(self, request: web.Request) -> Optional[Dict[str, Any]]:
         """Get authenticated user from request cookie."""
         if not self.authManager.enabled:
-            return {'username': 'anonymous', 'role': 'admin'}
+            return {'username': 'anonymous', 'role': 'admin', 'allowedScopes': ['ALL']}
         
         token = request.cookies.get(COOKIE_NAME)
         if not token:
             return None
         
         return self.authManager.validateToken(token)
+    
+    def _getEffectiveScopes(self, user: Dict[str, Any]) -> set:
+        """
+        Compute effective scopes for user.
+        
+        effectiveScopes = userAllowedScopes ∩ serverAllowedScopes
+        'ALL' means unrestricted access to all server scopes.
+        """
+        userScopes = user.get('allowedScopes', [])
+        serverScopes = self.config.get('allowedScopes', [self.config.get('scopeId', 'default')])
+        
+        # ALL means access to all server scopes
+        if 'ALL' in userScopes:
+            return set(serverScopes)
+        
+        # Intersection
+        return set(userScopes) & set(serverScopes)
+    
+    def _resolveRequestScope(
+        self, 
+        request: web.Request, 
+        user: Dict[str, Any],
+        requireForWrite: bool = False
+    ) -> tuple[Optional[str], Optional[web.Response]]:
+        """
+        Resolve scope for a request.
+        
+        Returns (scopeId, None) on success, or (None, errorResponse) on failure.
+        
+        Rules:
+        - If request has ?scopeId=, validate it's in effectiveScopes
+        - If no scopeId and single scope: use it
+        - If no scopeId and multi scope:
+          - GET: return None (caller aggregates)
+          - PUT/DELETE: return 400 "scopeId required"
+        """
+        effectiveScopes = self._getEffectiveScopes(user)
+        
+        if not effectiveScopes:
+            return None, web.json_response({'error': 'No accessible scopes'}, status=403)
+        
+        requestedScope = request.query.get('scopeId')
+        
+        if requestedScope:
+            # Validate requested scope
+            if requestedScope not in effectiveScopes:
+                return None, web.json_response({'error': f'Scope not accessible: {requestedScope}'}, status=403)
+            return requestedScope, None
+        
+        # No scope specified
+        if len(effectiveScopes) == 1:
+            return next(iter(effectiveScopes)), None
+        
+        # Multi-scope, no explicit scope
+        if requireForWrite:
+            return None, web.json_response(
+                {'error': 'scopeId required', 'availableScopes': list(effectiveScopes)}, 
+                status=400
+            )
+        
+        # GET with multi-scope: return None to signal aggregation needed
+        return None, None

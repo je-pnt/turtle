@@ -165,6 +165,13 @@ function handleMessage(msg) {
                 updateStatus('Command sent', 'success');
             }
             break;
+        
+        case 'presentationUpdate':
+            // Real-time presentation sync from another session/user
+            if (window.NovaMap && window.NovaMap.handlePresentationUpdate) {
+                window.NovaMap.handlePresentationUpdate(msg);
+            }
+            break;
             
         case 'error':
             updateStatus(`Error: ${msg.error || msg.message}`, 'error');

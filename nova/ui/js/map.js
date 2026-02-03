@@ -44,29 +44,26 @@
     // ============================================================================
     
     async function loadAllPresentations() {
-        // Load presentations for known scopes
-        // This is called on init - loads what's available
-        const defaultScopes = ['hardwareService|Payload'];
-        
-        for (const scopeId of defaultScopes) {
-            await loadPresentationsForScope(scopeId);
-        }
-    }
-    
-    async function loadPresentationsForScope(scopeId) {
-        if (presentationCache.has(scopeId)) return; // Already loaded
-        
+        // Load presentations from server - no scope needed
+        // Server resolves based on user's effective scopes
         try {
-            const response = await fetch(`/api/presentation/${encodeURIComponent(scopeId)}`);
+            const response = await fetch('/api/presentation', { credentials: 'same-origin' });
             if (response.ok) {
                 const data = await response.json();
                 if (data.overrides) {
-                    presentationCache.set(scopeId, data.overrides);
-                    console.log('[Map] Loaded presentations for scope:', scopeId, Object.keys(data.overrides).length, 'entities');
+                    // Group by scopeId for cache structure
+                    for (const [uniqueId, pres] of Object.entries(data.overrides)) {
+                        const scopeId = pres.scopeId || 'default';
+                        if (!presentationCache.has(scopeId)) {
+                            presentationCache.set(scopeId, {});
+                        }
+                        presentationCache.get(scopeId)[uniqueId] = pres;
+                    }
+                    console.log('[Map] Loaded presentations:', Object.keys(data.overrides).length, 'entities');
                 }
             }
         } catch (e) {
-            console.warn('[Map] Failed to load presentations for scope:', scopeId, e);
+            console.warn('[Map] Failed to load presentations:', e);
         }
     }
     
@@ -421,6 +418,39 @@
     }
 
     // ============================================================================
+    // Real-time Presentation Sync
+    // ============================================================================
+    
+    function handlePresentationUpdate(msg) {
+        // Handle WebSocket presentation update from server
+        const { scopeId, uniqueId, data, deleted, isDefault } = msg;
+        
+        if (deleted) {
+            // Remove from cache
+            if (presentationCache.has(scopeId)) {
+                delete presentationCache.get(scopeId)[uniqueId];
+            }
+        } else if (data) {
+            // Update cache
+            if (!presentationCache.has(scopeId)) {
+                presentationCache.set(scopeId, {});
+            }
+            const scope = presentationCache.get(scopeId);
+            scope[uniqueId] = { ...scope[uniqueId], ...data, scopeId };
+            
+            // Re-render entity if it exists
+            const entityState = entities.get(uniqueId);
+            if (entityState) {
+                // Build entityKey for updateEntityPresentation
+                const entityKey = `${scopeId}|${uniqueId}`;
+                updateEntityPresentation(entityKey, data);
+            }
+        }
+        
+        console.log('[Map] Presentation update:', scopeId, uniqueId, deleted ? '(deleted)' : '');
+    }
+
+    // ============================================================================
     // Helpers
     // ============================================================================
     
@@ -452,6 +482,7 @@
         removeEntity: removeEntity,
         flyToEntity: flyToEntity,
         requestRender: requestRender,
+        handlePresentationUpdate: handlePresentationUpdate,
         getViewer: () => viewer
     };
 

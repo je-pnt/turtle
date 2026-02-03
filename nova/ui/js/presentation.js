@@ -57,10 +57,11 @@
         try {
             const { scopeId, uniqueId } = splitEntityKey(entityKey);
             console.log('[Presentation] Loading for scopeId:', scopeId, 'uniqueId:', uniqueId);
-            const response = await fetch(`/api/presentation/${encodeURIComponent(scopeId)}`);
+            // Server resolves scope, pass as query param if multi-scope user
+            const response = await fetch(`/api/presentation?scopeId=${encodeURIComponent(scopeId)}`);
             if (response.ok) {
                 const data = await response.json();
-                // Server returns { scopeId, overrides: { uniqueId: presentation } }
+                // Server returns { overrides: { uniqueId: { ...presentation, scopeId } } }
                 currentPresentation = data.overrides?.[uniqueId] || {};
                 console.log('[Presentation] Loaded:', currentPresentation);
                 return currentPresentation;
@@ -73,9 +74,8 @@
     
     async function savePresentation(entityKey, overrides, isDefault = false) {
         const { scopeId, uniqueId } = splitEntityKey(entityKey);
-        const url = isDefault 
-            ? `/api/presentation/defaults/${encodeURIComponent(scopeId)}/${encodeURIComponent(uniqueId)}`
-            : `/api/presentation/${encodeURIComponent(scopeId)}/${encodeURIComponent(uniqueId)}`;
+        const basePath = isDefault ? '/api/presentation-default' : '/api/presentation';
+        const url = `${basePath}/${encodeURIComponent(uniqueId)}?scopeId=${encodeURIComponent(scopeId)}`;
         
         try {
             const response = await fetch(url, {
@@ -96,7 +96,8 @@
     async function clearUserOverride(entityKey, key) {
         try {
             const { scopeId, uniqueId } = splitEntityKey(entityKey);
-            const response = await fetch(`/api/presentation/${encodeURIComponent(scopeId)}/${encodeURIComponent(uniqueId)}?key=${key}`, {
+            const url = `/api/presentation/${encodeURIComponent(uniqueId)}?scopeId=${encodeURIComponent(scopeId)}&key=${key}`;
+            const response = await fetch(url, {
                 method: 'DELETE'
             });
             return response.ok;

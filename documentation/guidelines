@@ -31,3 +31,5 @@ Required response structure (every time):
 Functionally seperate, clear file structure: html files are only html, css is only css...etc. Folders/files are clearly named and accurately reflect their purpose. Each file/folder/class is focused on its job, and we avoid scope creep or placing things in classes/files where they do not belong. 
 
 If you cannot satisfy these guardrails, you must stop and explain why, and what architectural decision needs to change.
+
+Note: If the user specifically requests something, such as a test script or one-off edit: explain if it violates the architecture or guidelines here, but execute if they insist on continuing with the script/edit...etc. 

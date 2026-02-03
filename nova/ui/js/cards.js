@@ -1253,7 +1253,8 @@ function editCardName(entityKey) {
             const uniqueId = parts.length === 3 ? parts[2] : entityKey;
             
             try {
-                const response = await fetch(`/api/presentation/${encodeURIComponent(scopeId)}/${encodeURIComponent(uniqueId)}`, {
+                const url = `/api/presentation/${encodeURIComponent(uniqueId)}?scopeId=${encodeURIComponent(scopeId)}`;
+                const response = await fetch(url, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ displayName: newName })

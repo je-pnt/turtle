@@ -128,14 +128,15 @@ class AuthManager:
         """
         Validate JWT token including tokenVersion check.
         
-        Returns payload dict if valid, None otherwise.
+        Returns payload dict with current user data if valid, None otherwise.
         """
         if not self.enabled:
-            # Auth disabled - return anonymous user
+            # Auth disabled - return anonymous admin with all scopes
             return {
                 'userId': 'anonymous',
                 'username': 'anonymous',
-                'role': 'operator'
+                'role': 'admin',
+                'allowedScopes': ['ALL']
             }
         
         if not token:
@@ -158,7 +159,13 @@ class AuthManager:
                                f"token={tokenVersion}, user={userTokenVersion}")
                 return None
             
-            return payload
+            # Return payload with current user data (includes allowedScopes)
+            return {
+                'userId': payload['userId'],
+                'username': payload['username'],
+                'role': user['role'],
+                'allowedScopes': user.get('allowedScopes', [])
+            }
             
         except jwt.ExpiredSignatureError:
             self.log.warning("[Auth] Token expired")

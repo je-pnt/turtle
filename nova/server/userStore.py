@@ -32,6 +32,7 @@ class UserStore:
         "passwordHash": "bcrypt hash",
         "role": "admin|operator",
         "status": "pending|active|disabled",
+        "allowedScopes": ["scope1", "scope2"] | ["ALL"],  # Scopes user can access
         "tokenVersion": 1,  # Incremented on password reset/revoke for JWT invalidation
         "createdAt": "ISO timestamp",
         "updatedAt": "ISO timestamp"
@@ -51,10 +52,13 @@ class UserStore:
                 with open(self.filePath, 'r') as f:
                     data = json.load(f)
                     self._users = {u['userId']: u for u in data.get('users', [])}
-                # Migrate existing users to have tokenVersion if missing
+                # Migrate existing users
                 for user in self._users.values():
                     if 'tokenVersion' not in user:
                         user['tokenVersion'] = 1
+                    # Migrate allowedScopes: admin gets ALL, others get empty (must be assigned)
+                    if 'allowedScopes' not in user:
+                        user['allowedScopes'] = ['ALL'] if user.get('role') == 'admin' else []
                 self.log.info(f"[UserStore] Loaded {len(self._users)} users")
             except Exception as e:
                 self.log.error(f"[UserStore] Failed to load users: {e}")
@@ -101,12 +105,16 @@ class UserStore:
         # Hash password with bcrypt
         passwordHash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
         
+        # Admin gets ALL scopes, operators start with none (must be assigned)
+        defaultScopes = ['ALL'] if role == 'admin' else []
+        
         user = {
             'userId': userId,
             'username': username,
             'passwordHash': passwordHash.decode('utf-8'),
             'role': role,
             'status': status,
+            'allowedScopes': defaultScopes,
             'tokenVersion': 1,
             'createdAt': now,
             'updatedAt': now
@@ -154,10 +162,26 @@ class UserStore:
             return None
         
         user['role'] = role
+        # Admin role grants ALL scopes
+        if role == 'admin' and 'ALL' not in user.get('allowedScopes', []):
+            user['allowedScopes'] = ['ALL']
         user['updatedAt'] = datetime.now(timezone.utc).isoformat()
         self._save()
         
         self.log.info(f"[UserStore] Updated user {user['username']} role to {role}")
+        return self._sanitize(user)
+    
+    def updateScopes(self, userId: str, scopes: List[str]) -> Optional[Dict[str, Any]]:
+        """Update user's allowed scopes. Pass ['ALL'] for unrestricted access."""
+        user = self._users.get(userId)
+        if not user:
+            return None
+        
+        user['allowedScopes'] = scopes
+        user['updatedAt'] = datetime.now(timezone.utc).isoformat()
+        self._save()
+        
+        self.log.info(f"[UserStore] Updated user {user['username']} scopes to {scopes}")
         return self._sanitize(user)
     
     def resetPassword(self, userId: str, newPassword: str) -> Optional[Dict[str, Any]]:
