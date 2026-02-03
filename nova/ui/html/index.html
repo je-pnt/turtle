@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NOVA - Time-Indexed Truth System</title>
+    <link rel="icon" href="/ui/favicon.ico" type="image/x-icon">
+    <!-- Cesium CSS -->
+    <link rel="stylesheet" href="/ui/cesium/Build/Cesium/Widgets/widgets.css">
+    <!-- NOVA CSS -->
+    <link rel="stylesheet" href="/ui/css/styles.css">
+    <link rel="stylesheet" href="/ui/css/auth.css">
+    <link rel="stylesheet" href="/ui/css/map.css">
+    <link rel="stylesheet" href="/ui/css/presentation.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Cesium Map Background (Phase 10) -->
+        <div id="mapContainer"></div>
+        
+        <!-- Header with User Info -->
+        <header class="app-header" id="appHeader">
+            <h1 class="app-title">NOVA</h1>
+            <div class="header-spacer"></div>
+            <div class="user-info" id="userInfo">
+                <button id="usernameBtn" class="username-btn">
+                    <span id="username"></span>
+                    <span class="dropdown-arrow">▼</span>
+                </button>
+                <div id="userDropdown" class="user-dropdown">
+                    <a id="adminLink" class="dropdown-item" href="/admin">Admin Panel</a>
+                    <button id="logoutBtn" class="dropdown-item">Logout</button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Sidebar Toggle Buttons -->
+        <button class="toggle-btn" id="toggleBtn" aria-label="Toggle Main Panel" aria-expanded="false">☰</button>
+        <button class="toggle-btn detailed-panel-toggle" id="detailedPanelToggleBtn" aria-label="Toggle Detailed Panel" aria-expanded="false">📋</button>
+
+        <!-- Main Content Area -->
+        <main class="main" id="mainContent">
+            <!-- Left Sidebar: Entities/Streams/Tasks -->
+            <aside class="sidebar" id="sidebar" aria-label="Main Panel">
+                <div class="panel-header">
+                    <h3 class="panel-title">Main Panel</h3>
+                </div>
+                <nav class="entity-tree" id="entityTree">
+                    <section class="tree-section">
+                        <h2 class="tree-header" data-section="entities" role="button" tabindex="0">Entities</h2>
+                        <div class="tree-items" id="entitiesList" role="list"></div>
+                    </section>
+                    
+                    <section class="tree-section">
+                        <h2 class="tree-header" data-section="streams" role="button" tabindex="0">Streams</h2>
+                        <div class="tree-items" id="streamsList" role="list"></div>
+                    </section>
+                    
+                    <section class="tree-section">
+                        <h2 class="tree-header" data-section="tasks" role="button" tabindex="0">Tasks</h2>
+                        <div class="tree-items" id="tasksList" role="list"></div>
+                    </section>
+                </nav>
+            </aside>
+            
+            <!-- Right Detailed Panel: Cards -->
+            <aside class="detailed-panel" id="detailedPanel" aria-label="Detailed Panel">
+                <div class="panel-header">
+                    <h3 class="panel-title">Detailed Panel</h3>
+                    <button class="panel-toggle-btn" id="detailedPanelToggle" aria-label="Toggle Detailed Panel">»</button>
+                </div>
+                <div class="detailed-panel-content" id="detailedPanelContent">
+                    <!-- Cards will be populated here -->
+                </div>
+            </aside>
+            
+            <!-- Center: Map is now the background (Phase 10) -->
+            <div class="center-container" id="centerContainer">
+                <!-- Map fills this area via CSS -->
+            </div>
+        </main>
+
+        <!-- Chat Panel (above timeline, collapsible, resizable) -->
+        <section class="chat-panel collapsed" id="chatPanel">
+            <div class="chat-resize-handle"></div>
+            <header class="chat-header">
+                <button class="chat-toggle" id="chatToggle">
+                    <span class="chat-collapse-icon">▼</span>
+                    💬 Chat <span class="chat-badge hidden" id="chatBadge">●</span>
+                </button>
+                <select id="chatChannel" class="chat-channel">
+                    <option value="ops">ops</option>
+                    <option value="team">team</option>
+                </select>
+            </header>
+            <div class="chat-messages" id="chatMessages"></div>
+            <div class="chat-input-row">
+                <input type="text" id="chatInput" class="chat-input" placeholder="Type a message..." autocomplete="off" />
+                <button class="chat-send" id="chatSend">Send</button>
+            </div>
+        </section>
+
+        <!-- Timeline Bar (Bottom Fixed) -->
+        <div id="timelineBar">
+            <button class="timeline-btn" id="playPauseBtn" title="Play/Pause">⏸</button>
+            <button class="timeline-btn active" id="liveBtn" title="Jump to Live">●</button>
+            
+            <div class="speed-control">
+                <span class="speed-label">Rate:</span>
+                <input type="text" class="speed-input" id="speedInput" value="1.0">
+                <span class="speed-unit">x</span>
+            </div>
+            
+            <div class="speed-control">
+                <span class="speed-label">Timebase:</span>
+                <select class="speed-input" id="timebaseSelect" style="width: auto; padding: 0.25rem 0.5rem;">
+                    <option value="source">Source</option>
+                    <option value="canonical">Canonical</option>
+                </select>
+            </div>
+            
+            <input type="datetime-local" class="datetime-input" id="datetimeInput">
+            
+            <div class="timeline-track">
+                <div class="timeline-date" id="timelineDate">Jan 27, 2026</div>
+                <div class="timeline-line-container">
+                    <input type="range" class="timeline-slider" id="timeSlider" min="0" max="100" value="100">
+                    <div class="timeline-cursor" id="timelineCursor"></div>
+                </div>
+            </div>
+            
+            <div class="timeline-time">
+                <span class="time-mode" id="timeMode">LIVE</span>
+                <time class="time-display" id="timeDisplay">00:00:00.000</time>
+            </div>
+            
+            <div id="connectionStatus" class="disconnected">⚫ Disconnected</div>
+        </div>
+    </div>
+
+    <!-- Cesium JS (local-only, Phase 10) -->
+    <script>
+        window.CESIUM_BASE_URL = '/ui/cesium/Build/Cesium/';
+    </script>
+    <script src="/ui/cesium/Build/Cesium/Cesium.js"></script>
+    
+    <!-- NOVA JS -->
+    <script src="/ui/js/auth.js"></script>
+    <script src="/ui/js/websocket.js"></script>
+    <script src="/ui/js/timeline.js"></script>
+    <script src="/ui/js/map.js"></script>
+    <script src="/ui/js/presentation.js"></script>
+    <script src="/ui/js/display.js"></script>
+    <script src="/ui/js/entities.js"></script>
+    <script src="/ui/js/cards.js"></script>
+    <script src="/ui/js/streams.js"></script>
+    <script src="/ui/js/chat.js"></script>
+    <script src="/ui/js/split-setup.js"></script>
+    <script src="/ui/js/init.js"></script>
+</body>
+</html>

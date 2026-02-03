@@ -1,0 +1,13 @@
+# NOVA 2.0 Requirements
+
+# Core dependencies
+canonicaljson>=2.0.0  # RFC 8785 JCS for EventId stability
+
+# Transport dependencies (Phase 2+)
+# (sdk.transport brings its own dependencies: nats-py, nng, etc.)
+
+# Server dependencies (Phase 3+)
+aiohttp>=3.9.0  # WebSocket server
+PyJWT>=2.8.0    # Auth token validation
+orjson>=3.9.0   # Fast JSON serialization for IPC
+bcrypt>=4.0.0   # Password hashing for Phase 9 Auth

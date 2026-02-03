@@ -1,0 +1,40 @@
+{
+  "scopeId": "payload-local",
+  "dbPath": "./nova/data/nova_truth.db",
+  "timebaseDefault": "canonical",
+  "mode": "payload",
+  "transport": {
+    "uri": "nats://localhost:4222",
+    "reconnectAttempts": 5,
+    "timeout": 10.0
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 80,
+    "auth": {
+      "enabled": true,
+      "secret": "dev-secret-change-in-production",
+      "tokenExpirySeconds": 3600,
+      "usersPath": "./nova/data/users.json",
+      "bootstrapAdmin": {
+        "username": "admin",
+        "password": "admin123"
+      }
+    }
+  },
+  "tcp": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "commandPort": 9000,
+    "loopbackPortRange": [9100, 9199]
+  },
+  "ui": {
+    "defaultRate": 1.0,
+    "defaultTimebase": "source",
+    "defaultMode": "live",
+    "maxDisplayEvents": 1000,
+    "checkpointIntervalSeconds": 500,
+    "historyTimeoutSeconds": 120,
+    "updateMaxHz": 5.0
+  }
+}

@@ -1,0 +1,151 @@
+/**
+ * NOVA Map CSS - Cesium Geospatial Background
+ * 
+ * Phase 10 (phase9-11Updated.md):
+ * - Cesium is full-page background behind panels
+ * - Sidebars and chat overlay on top of the map
+ * - No CSS override soup - clean, minimal styling
+ */
+
+/* ============================================================================
+   Map Container - Full Page Background
+   ============================================================================ */
+
+#mapContainer {
+    position: fixed;
+    top: 50px;          /* Below header */
+    left: 0;
+    right: 0;
+    bottom: 64px;       /* Above timeline */
+    z-index: 0;         /* Below everything else */
+    background: var(--bg-primary);
+}
+
+/* Cesium viewer fills the container */
+#mapContainer .cesium-viewer {
+    width: 100%;
+    height: 100%;
+}
+
+/* Hide Cesium credits */
+#mapContainer .cesium-viewer-bottom {
+    display: none !important;
+}
+
+/* Cesium info box styling to match NOVA theme */
+#mapContainer .cesium-infoBox {
+    background: rgba(26, 26, 26, 0.95);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+#mapContainer .cesium-infoBox-title {
+    background: var(--bg-tertiary);
+    color: var(--accent);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+#mapContainer .cesium-infoBox-description {
+    color: var(--text-primary);
+}
+
+/* Selection indicator color */
+#mapContainer .cesium-selection-wrapper > div {
+    border-color: var(--accent) !important;
+}
+
+/* ============================================================================
+   Layout Adjustments for Map Background
+   ============================================================================ */
+
+/* Sidebars z-index is defined in styles.css - do not override here */
+
+/* Center container is transparent (map shows through) */
+.center-container {
+    background: transparent;
+    pointer-events: none;  /* Allow clicks to pass through to map */
+}
+
+/* Chat panel above map */
+.chat-panel {
+    z-index: 1001;
+    background: rgba(26, 26, 26, 0.95);
+    backdrop-filter: blur(8px);
+}
+
+/* Header above everything */
+.app-header {
+    z-index: 2000;
+    background: rgba(26, 26, 26, 0.98);
+    backdrop-filter: blur(8px);
+}
+
+/* Timeline above map */
+#timelineBar {
+    z-index: 2000;
+    background: rgba(26, 26, 26, 0.98);
+    backdrop-filter: blur(8px);
+}
+
+/* Toggle buttons above map */
+.toggle-btn {
+    z-index: 2001;
+}
+
+/* ============================================================================
+   Map Controls (if needed in future)
+   ============================================================================ */
+
+.map-controls {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.map-control-btn {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.map-control-btn:hover {
+    background: var(--bg-secondary);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+/* ============================================================================
+   Entity Labels on Map
+   ============================================================================ */
+
+/* These are handled by Cesium's label system, but we can override colors */
+.cesium-viewer .cesium-viewer-cesiumInspectorContainer {
+    display: none;
+}
+
+/* ============================================================================
+   Loading State
+   ============================================================================ */
+
+#mapContainer.loading::after {
+    content: 'Loading Map...';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: var(--text-secondary);
+    font-size: 1rem;
+}

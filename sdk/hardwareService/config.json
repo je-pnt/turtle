@@ -1,0 +1,11 @@
+{
+  "scopeId": "payload-local",
+  "transport": "nng+ipc://C:\\tmp\\hwService",
+  "novaTransport": "nats://localhost:4222",
+  "containerId": "Payload",
+  "scanIntervalSeconds": 5,
+  "topologyIntervalSeconds": 10,
+  "deviceTimeoutSeconds": 15,
+  "serialHints": [],
+  "deviceConfig": {}
+}

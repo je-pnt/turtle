@@ -1,0 +1,643 @@
+/**
+ * NOVA Auth & Chat Styles
+ * Phase 9 Authentication UI
+ */
+
+/* ==========================================================================
+   Auth Pages (Login, Register)
+   ========================================================================== */
+
+.auth-page {
+    background: var(--bg-primary, #0a0a0a);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.auth-container {
+    width: 100%;
+    max-width: 400px;
+    padding: 1rem;
+}
+
+.auth-box {
+    background: var(--bg-secondary, #1a1a1a);
+    border: 1px solid var(--border, #2a2a2a);
+    border-radius: 8px;
+    padding: 2rem;
+}
+
+.auth-title {
+    color: var(--accent, #00d4ff);
+    text-align: center;
+    margin: 0 0 0.5rem;
+    font-size: 2rem;
+    letter-spacing: 0.1em;
+}
+
+.auth-subtitle {
+    color: var(--text-secondary, #888);
+    text-align: center;
+    margin: 0 0 1.5rem;
+    font-size: 1.1rem;
+    font-weight: normal;
+}
+
+.auth-form {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.form-group label {
+    color: var(--text-secondary, #888);
+    font-size: 0.85rem;
+}
+
+.form-group input {
+    background: var(--bg-primary, #0a0a0a);
+    border: 1px solid var(--border, #2a2a2a);
+    border-radius: 4px;
+    padding: 0.75rem;
+    color: var(--text-primary, #e0e0e0);
+    font-size: 1rem;
+}
+
+.form-group input:focus {
+    outline: none;
+    border-color: var(--accent, #00d4ff);
+}
+
+.error-message {
+    color: #ff4a4a;
+    font-size: 0.85rem;
+    min-height: 1.2em;
+}
+
+.success-message {
+    color: #4aff4a;
+    font-size: 0.85rem;
+    min-height: 1.2em;
+}
+
+.auth-btn {
+    background: var(--accent, #00d4ff);
+    color: #000;
+    border: none;
+    border-radius: 4px;
+    padding: 0.75rem;
+    font-size: 1rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+
+.auth-btn:hover {
+    opacity: 0.9;
+}
+
+.auth-links {
+    text-align: center;
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border, #2a2a2a);
+}
+
+.auth-links a {
+    color: var(--accent, #00d4ff);
+    text-decoration: none;
+}
+
+.auth-links a:hover {
+    text-decoration: underline;
+}
+
+/* ==========================================================================
+   Admin Page
+   ========================================================================== */
+
+.admin-page {
+    background: var(--bg-primary, #0a0a0a);
+    min-height: 100vh;
+    color: var(--text-primary, #e0e0e0);
+}
+
+.admin-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 1rem;
+}
+
+.admin-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--border, #2a2a2a);
+    margin-bottom: 1.5rem;
+}
+
+.admin-header h1 {
+    margin: 0;
+    color: var(--accent, #00d4ff);
+}
+
+.admin-nav {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+}
+
+.nav-link {
+    color: var(--accent, #00d4ff);
+    text-decoration: none;
+}
+
+.nav-link:hover {
+    text-decoration: underline;
+}
+
+.admin-user {
+    color: var(--text-secondary, #888);
+}
+
+.admin-section h2 {
+    margin: 0 0 1rem;
+    font-size: 1.25rem;
+}
+
+.admin-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.user-count {
+    color: var(--text-secondary, #888);
+}
+
+.toolbar-btn {
+    background: var(--bg-secondary, #1a1a1a);
+    color: var(--text-primary, #e0e0e0);
+    border: 1px solid var(--border, #2a2a2a);
+    border-radius: 4px;
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+}
+
+.toolbar-btn:hover {
+    background: var(--bg-tertiary, #2a2a2a);
+}
+
+.users-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--bg-secondary, #1a1a1a);
+    border: 1px solid var(--border, #2a2a2a);
+    border-radius: 4px;
+}
+
+.users-table th,
+.users-table td {
+    padding: 0.75rem 1rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border, #2a2a2a);
+}
+
+.users-table th {
+    background: var(--bg-primary, #0a0a0a);
+    color: var(--text-secondary, #888);
+    font-weight: 500;
+}
+
+.users-table tr:last-child td {
+    border-bottom: none;
+}
+
+.users-table tr:hover td {
+    background: var(--bg-tertiary, #2a2a2a);
+}
+
+.badge {
+    display: inline-block;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.status-pending {
+    background: #664400;
+    color: #ffaa00;
+}
+
+.status-active {
+    background: #004400;
+    color: #44ff44;
+}
+
+.status-disabled {
+    background: #440000;
+    color: #ff4444;
+}
+
+/* Approval Pending Page */
+.pending-message {
+    text-align: center;
+    padding: 2rem 1rem;
+}
+
+.pending-icon {
+    font-size: 3rem;
+    margin-bottom: 1rem;
+}
+
+.pending-message p {
+    color: var(--text-primary, #fff);
+    margin: 0.5rem 0;
+    line-height: 1.6;
+}
+
+.pending-note {
+    color: var(--text-secondary, #888) !important;
+    font-size: 0.9rem;
+}
+
+.role-admin {
+    background: #440044;
+    color: #ff44ff;
+}
+
+.role-operator {
+    background: #004444;
+    color: #44ffff;
+}
+
+.actions-cell {
+    white-space: nowrap;
+}
+
+.action-btn {
+    padding: 0.25rem 0.75rem;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    margin-right: 0.25rem;
+}
+
+.approve-btn {
+    background: #006600;
+    color: #fff;
+}
+
+.approve-btn:hover {
+    background: #008800;
+}
+
+.disable-btn {
+    background: #660000;
+    color: #fff;
+}
+
+.disable-btn:hover {
+    background: #880000;
+}
+
+.enable-btn {
+    background: #006666;
+    color: #fff;
+}
+
+.enable-btn:hover {
+    background: #008888;
+}
+
+.role-selector {
+    background: var(--bg-primary, #0a0a0a);
+    color: var(--text-primary, #e0e0e0);
+    border: 1px solid var(--border, #2a2a2a);
+    border-radius: 4px;
+    padding: 0.25rem;
+}
+
+/* ==========================================================================
+   App Header with User Info
+   ========================================================================== */
+
+.app-header {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 40px;
+    background: var(--bg-secondary, #1a1a1a);
+    border-bottom: 1px solid var(--border, #2a2a2a);
+    display: flex;
+    align-items: center;
+    padding: 0 1rem;
+    z-index: 1000;
+}
+
+.app-title {
+    margin: 0;
+    font-size: 1.25rem;
+    color: var(--accent, #00d4ff);
+    letter-spacing: 0.1em;
+}
+
+.header-spacer {
+    flex: 1;
+}
+
+.user-info {
+    position: relative;
+}
+
+.username-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-primary, #e0e0e0);
+    cursor: pointer;
+    padding: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.username-btn:hover {
+    color: var(--accent, #00d4ff);
+}
+
+.dropdown-arrow {
+    font-size: 0.7rem;
+    opacity: 0.7;
+}
+
+.user-dropdown {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    background: var(--bg-secondary, #1a1a1a);
+    border: 1px solid var(--border, #2a2a2a);
+    border-radius: 4px;
+    min-width: 150px;
+    display: none;
+    z-index: 1001;
+}
+
+.user-dropdown.show {
+    display: block;
+}
+
+.dropdown-item {
+    display: block;
+    width: 100%;
+    padding: 0.75rem 1rem;
+    color: var(--text-primary, #e0e0e0);
+    text-decoration: none;
+    text-align: left;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 0.9rem;
+}
+
+.dropdown-item:hover {
+    background: var(--bg-tertiary, #2a2a2a);
+}
+
+/* Adjust main content for header */
+body:has(.app-header) #app {
+    padding-top: 40px;
+}
+
+body:has(.app-header) .toggle-btn {
+    top: 50px;
+}
+
+/* ==========================================================================
+   Chat Panel - Positioned between sidebars, above timeline
+   ========================================================================== */
+
+.chat-panel {
+    position: fixed;
+    bottom: 4rem;  /* Ties to top of timeline bar */
+    /* Left/right set dynamically by JS based on sidebar widths */
+    left: var(--chat-left, 240px);
+    right: var(--chat-right, 300px);
+    height: var(--chat-height, 200px);
+    background: var(--bg-secondary, #1a1a1a);
+    border: 1px solid var(--border, #2a2a2a);
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    display: flex;
+    flex-direction: column;
+    z-index: 100;
+    transition: height 0.2s ease;
+    pointer-events: auto;  /* Ensure chat receives clicks */
+}
+
+.chat-panel.collapsed {
+    height: 36px;
+}
+
+.chat-panel.collapsed .chat-messages,
+.chat-panel.collapsed .chat-input-row {
+    display: none;
+}
+
+/* Resize handle at top of chat panel */
+.chat-resize-handle {
+    position: absolute;
+    top: -5px;
+    left: 0;
+    right: 0;
+    height: 10px;
+    cursor: ns-resize;
+    background: transparent;
+    z-index: 101;
+}
+
+.chat-resize-handle:hover,
+.chat-resize-handle.dragging {
+    background: var(--accent, #00d4ff);
+    opacity: 0.3;
+}
+
+.chat-panel.collapsed .chat-resize-handle {
+    display: none;
+}
+
+.chat-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.5rem 1rem;
+    background: var(--bg-primary, #0a0a0a);
+    border-bottom: 1px solid var(--border, #2a2a2a);
+    border-radius: 8px 8px 0 0;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+
+.chat-toggle {
+    background: transparent;
+    border: none;
+    color: var(--text-primary, #e0e0e0);
+    cursor: pointer;
+    padding: 0.25rem 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.chat-toggle:hover {
+    color: var(--accent, #00d4ff);
+}
+
+.chat-collapse-icon {
+    font-size: 0.7rem;
+    transition: transform 0.2s ease;
+}
+
+.chat-panel.collapsed .chat-collapse-icon {
+    transform: rotate(-90deg);
+}
+
+.chat-badge {
+    color: #ff4a4a;
+    font-size: 0.8rem;
+}
+
+.chat-badge.hidden {
+    display: none;
+}
+
+.chat-channel {
+    background: var(--bg-secondary, #1a1a1a);
+    color: var(--text-primary, #e0e0e0);
+    border: 1px solid var(--border, #2a2a2a);
+    border-radius: 4px;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.85rem;
+    margin-left: auto;
+}
+
+.chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0.5rem 1rem;
+    min-height: 0;
+}
+
+.chat-message {
+    margin-bottom: 0.5rem;
+}
+
+.chat-message.highlighted {
+    background: var(--accent-dim, rgba(0, 212, 255, 0.1));
+    border-radius: 4px;
+    padding: 0.25rem;
+    margin: 0 -0.25rem 0.5rem;
+}
+
+/* Current message in replay mode */
+.chat-message.current {
+    background: var(--accent-dim, rgba(0, 212, 255, 0.15));
+    border-left: 3px solid var(--accent, #00d4ff);
+    border-radius: 4px;
+    padding: 0.25rem 0.25rem 0.25rem 0.5rem;
+    margin: 0 -0.25rem 0.5rem;
+}
+
+/* Follow toggle button */
+.chat-follow-toggle {
+    background: transparent;
+    border: 1px solid var(--border, #2a2a2a);
+    color: var(--text-secondary, #888);
+    border-radius: 4px;
+    padding: 0.25rem 0.5rem;
+    cursor: pointer;
+    font-size: 0.875rem;
+    transition: all 0.2s;
+}
+
+.chat-follow-toggle:hover {
+    border-color: var(--accent, #00d4ff);
+    color: var(--text-primary, #e0e0e0);
+}
+
+.chat-follow-toggle.active {
+    background: var(--accent, #00d4ff);
+    color: #000;
+    border-color: var(--accent, #00d4ff);
+}
+
+/* Disabled state for replay mode */
+.chat-input:disabled,
+.chat-send:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.chat-username {
+    color: var(--accent, #00d4ff);
+    font-weight: 500;
+    margin-right: 0.5rem;
+}
+
+.chat-time {
+    color: var(--text-secondary, #888);
+    font-size: 0.75rem;
+}
+
+.chat-text {
+    color: var(--text-primary, #e0e0e0);
+    word-wrap: break-word;
+}
+
+.chat-input-row {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-top: 1px solid var(--border, #2a2a2a);
+    flex-shrink: 0;
+}
+
+.chat-input {
+    flex: 1;
+    background: var(--bg-primary, #0a0a0a);
+    border: 1px solid var(--border, #2a2a2a);
+    border-radius: 4px;
+    padding: 0.5rem;
+    color: var(--text-primary, #e0e0e0);
+}
+
+.chat-input:focus {
+    outline: none;
+    border-color: var(--accent, #00d4ff);
+}
+
+.chat-send {
+    background: var(--accent, #00d4ff);
+    color: #000;
+    border: none;
+    border-radius: 4px;
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+.chat-send:hover {
+    opacity: 0.9;
+}
+

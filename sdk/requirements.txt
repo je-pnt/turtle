@@ -1,0 +1,24 @@
+# SDK Requirements - Version 1.0-beta
+# Core dependencies for Uncompromising Sensors SDK
+
+# Async IO and serial communication
+pyserial>=3.5
+pyserial-asyncio>=0.6
+
+# Messaging and transport
+nats-py>=2.6.0
+pynng>=0.7.2
+
+# Data processing and scientific computing
+numpy>=1.21.0
+pandas>=1.3.0
+
+# Web framework for visualization
+quart>=0.18.0
+
+# Geodetic calculations
+pyproj>=3.0.0
+
+# Configuration and utilities
+pyyaml>=6.0
+python-dateutil>=2.8.0

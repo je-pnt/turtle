@@ -1,0 +1,1105 @@
+# hardwareService API & Integration Guide
+
+## Overview
+
+hardwareService is a resilient, plugin-based Python service for hardware device management, data streaming, and consumer application integration. It provides automatic device discovery, lifecycle management, configuration control, and real-time data streaming through a unified transport layer. The service is designed for extensibility, reliability, and seamless integration with distributed systems.
+
+**Key Features:**
+- Automatic device discovery and hot-plug support
+- Plugin-based architecture for extensibility
+- Container-aware multi-instance deployment
+- REQ/REP command interface for control operations
+- PUB/SUB streaming for real-time data
+- Automatic error recovery and device restart
+- Configuration management with audit logging
+- Support for serial, USB, and network-based devices
+
+---
+
+## Architecture Overview
+
+### Component Hierarchy
+```
+HardwareServiceApp (main.py)
+├── HardwareService (hardwareService.py)
+│   ├── Transport Layer (NNG/NATS)
+│   ├── IoLayer (ioLayer.py)
+│   ├── ConfigManager (configManager.py)
+│   ├── SubjectBuilder (subjects.py)
+│   └── Plugins (plugins/*.py)
+│       └── Devices (devices/*.py)
+└── Hardware Config (hardware-config.json)
+```
+
+### Data Flow
+1. **Discovery**: Plugins probe available ports → return candidate devices
+2. **Instantiation**: HardwareService creates device instances → calls device.open()
+3. **Streaming**: Device readLoop() → emit() → transport.publish() → consumers
+4. **Control**: Consumer → control subject → handleControl() → device operation
+5. **Recovery**: Exception in readLoop() → close() → remove from topology → rescan
+
+---
+
+## 1. Transport & Subject Architecture
+
+### SubjectBuilder Pattern
+hardwareService uses a hierarchical subject naming system that supports multi-container deployments:
+
+**Pattern**: `{serviceId}.{category}.{containerId}[.{deviceId}][.{kind}][.{dataType}]`
+
+**Core Subjects:**
+- **Control**: `hardwareService.control.{containerId}` - REQ/REP command interface
+- **Events**: `hardwareService.events.{containerId}` - Service lifecycle events
+- **Data**: `hardwareService.data.{containerId}.{deviceId}.{kind}.{dataType}` - Device data streams
+- **Topology**: `hardwareService.topology.{containerId}` - Device status broadcasts
+- **Discovery**: `hardwareService.discovery` - Service discovery request (NATS only, responses on topology subject)
+
+**Example Subjects:**
+```
+hardwareService.control.Payload                           # Control commands
+hardwareService.events.Payload                            # Service events
+hardwareService.data.Payload.37651704393-X5.sbf.telemetry # Device data
+hardwareService.topology.Payload                          # Topology updates
+```
+
+**ContainerId Usage:**
+- Identifies specific service instances in multi-container environments
+- Defaults to `HOSTNAME` environment variable or config value
+- Allows multiple hardwareService instances to coexist on same transport
+
+### Transport Configuration
+hardwareService supports multiple transport protocols:
+
+**NNG IPC (Local)**:
+```json
+{
+  "transport": "nng+ipc:///tmp/hwService"
+}
+```
+
+**NATS (Networked)**:
+```json
+{
+  "transport": "nats://localhost:4222"
+}
+```
+
+**Platform Compatibility:**
+- Linux/Mac: `/tmp/hwService`
+- Windows: `C:\\tmp\\hwService`
+- Automatic path conversion in `main.py`
+
+---
+
+## 2. Plugin Architecture
+
+### Plugin Lifecycle
+Plugins implement device discovery and instantiation. All plugins must inherit from `BasePlugin` and implement:
+
+**Required Methods:**
+```python
+@staticmethod
+def getKind() -> str:
+    """Return unique device type identifier (e.g., 'sbf', 'ubx', 'digitalOscope')"""
+
+@staticmethod
+async def test(ports: List[str], ioLayer) -> List[Dict]:
+    """Probe ports and return candidate devices
+    Returns: [{'deviceId': str, 'kind': str, 'port': str, 'meta': dict}]"""
+
+@staticmethod
+async def createDevice(deviceId: str, ports: List[str], meta: Dict, 
+                      ioLayer, transport=None, subjectBuilder=None):
+    """Factory method to instantiate device instance"""
+
+@staticmethod
+def configure(hardwareConfig: dict, config: dict) -> None:
+    """Optional: Configure plugin during initialization"""
+```
+
+### Oscope Plugin Rules
+- Only ONE oscope plugin is loaded per instance (prevents device conflicts)
+- Type selection: `hardware-config.json` → `hardware.oscope.type` (digital/analog)
+- Trigger configuration: `hardware.oscope.triggerChannel` passed to plugin
+
+**Example hardware-config.json:**
+```json
+{
+  "hardware": {
+    "oscope": {"type": "digital", "triggerChannel": 1},
+    "receivers": [
+      {"type": "X5", "serialNumber": null, "name": "X5"}
+    ]
+  }
+}
+```
+
+**Trigger Channel Defaults:**
+- Digital oscope: channel 0 (overridden by hardware-config.json)
+- Analog oscope: channel 1 (overridden by hardware-config.json)
+
+### Creating a New Plugin
+
+**1. Create plugin file**: `sdk/hardwareService/plugins/myDevicePlugin.py`
+
+```python
+from .basePlugin import BasePlugin
+
+class MyDevicePlugin(BasePlugin):
+    
+    @staticmethod
+    def getKind() -> str:
+        return 'myDevice'
+    
+    @staticmethod
+    async def test(ports: List[str], ioLayer) -> List[Dict]:
+        candidates = []
+        for port in ports:
+            try:
+                reader, writer = await ioLayer.openConnection(
+                    'serial', port=port, baudrate=115200
+                )
+                # Probe device...
+                deviceId = "discovered_id"
+                candidates.append({
+                    'deviceId': deviceId,
+                    'kind': 'myDevice',
+                    'port': port,
+                    'meta': {'baudrate': 115200}
+                })
+                await ioLayer.closeConnection(writer)
+                await asyncio.sleep(0.5)  # Port release delay
+            except Exception as e:
+                pass
+        return candidates
+    
+    @staticmethod
+    async def createDevice(deviceId, ports, meta, ioLayer, 
+                          transport=None, subjectBuilder=None):
+        return MyDevice(deviceId, ports[0], meta['baudrate'], 
+                       ioLayer, transport, subjectBuilder)
+```
+
+**2. No registration required** - plugins are auto-discovered from `plugins/` directory
+
+---
+
+## 3. Device Implementation
+
+### Device Lifecycle Contract
+All devices must inherit from `BaseDevice` and implement:
+
+**Required Methods:**
+```python
+async def open():
+    """Initialize hardware connection - called once after creation"""
+
+async def close():
+    """Release hardware resources - called on shutdown or error"""
+
+async def readLoop():
+    """Main data acquisition loop - runs continuously until error/shutdown
+    - Read data from hardware
+    - Call self.emit(dataType, ts, data) to publish
+    - LET EXCEPTIONS PROPAGATE for automatic recovery"""
+
+async def writeTo(data: bytes) -> dict:
+    """Send commands/config to device
+    Returns: {'status': str, 'deviceId': str, 'bytesLength': int, 
+              'error': str (optional)}"""
+
+def getKind() -> str:
+    """Return device type for subject routing"""
+```
+
+**Provided Methods (from BaseDevice):**
+```python
+async def emit(dataType: str, ts: float, data: bytes):
+    """Publish data to transport (automatic subject generation)"""
+
+async def softwareReset():
+    """Optional: Send device-specific reset command"""
+
+async def attachPort(port: str):
+    """Optional: Claim additional port for multi-port devices"""
+```
+
+### Exception Handling Philosophy
+**CRITICAL**: Let exceptions propagate from `readLoop()` to trigger automatic recovery:
+
+```python
+async def readLoop(self):
+    """Read loop - exceptions propagate to HardwareService"""
+    while True:
+        # No try/except here! Exceptions trigger recovery
+        data = await self.reader.read(4096)
+        if not data:
+            raise ConnectionError("Device disconnected")
+        
+        # Process and emit
+        ts = datetime.now(timezone.utc).timestamp()
+        await self.emit('telemetry', ts, data)
+```
+
+**Recovery Flow:**
+1. Exception in `readLoop()` → caught by HardwareService
+2. `device.close()` called to release resources
+3. Device removed from topology
+4. Topology update published
+5. Next scan cycle rediscovers device
+6. Device restarted automatically
+
+### Creating a New Device
+
+**1. Create device file**: `sdk/hardwareService/devices/myDevice.py`
+
+```python
+from .baseDevice import BaseDevice
+from sdk.logging import getLogger
+
+class MyDevice(BaseDevice):
+    
+    def __init__(self, deviceId, port, baudrate, ioLayer, 
+                 transport=None, subjectBuilder=None):
+        super().__init__(deviceId, ioLayer, transport, subjectBuilder)
+        self.port = port
+        self.baudrate = baudrate
+        self.reader = None
+        self.writer = None
+        self.log = getLogger()
+    
+    def getKind(self):
+        return 'myDevice'
+    
+    async def open(self):
+        """Open serial connection"""
+        self.reader, self.writer = await self.ioLayer.openConnection(
+            'serial', port=self.port, baudrate=self.baudrate
+        )
+        self.log.info('Device opened', deviceId=self.deviceId)
+    
+    async def close(self):
+        """Close connection"""
+        if self.writer:
+            await self.ioLayer.closeConnection(self.writer)
+    
+    async def writeTo(self, data: bytes) -> dict:
+        """Send command to device"""
+        try:
+            self.writer.write(data)
+            await self.writer.drain()
+            return {
+                'status': 'applied',
+                'deviceId': self.deviceId,
+                'bytesLength': len(data)
+            }
+        except Exception as e:
+            return {
+                'status': 'error',
+                'deviceId': self.deviceId,
+                'error': str(e)
+            }
+    
+    async def readLoop(self):
+        """Data acquisition loop"""
+        while True:
+            data = await self.reader.read(4096)
+            if data:
+                ts = datetime.now(timezone.utc).timestamp()
+                await self.emit('telemetry', ts, data)
+```
+
+**2. Create plugin** (see Plugin section above)
+
+---
+
+## 4. Control Commands (REQ/REP Interface)
+
+### Command Protocol
+Send JSON commands to control subject and receive synchronous responses.
+
+**Control Subject Format:**
+- General: `hardwareService.control.{containerId}`
+- Device-specific: `hardwareService.control.{containerId}.{deviceId}`
+
+**Command Structure:**
+```json
+{
+  "command": "commandName",
+  "param1": "value1",
+  "param2": "value2"
+}
+```
+
+### Supported Commands
+
+#### 1. getTopology
+Retrieve all active devices and their data subjects.
+
+**Request:**
+```json
+{
+  "command": "getTopology"
+}
+```
+
+**Response:**
+```json
+{
+  "event": "topology",
+  "containerId": "Payload",
+  "devices": [
+    {
+      "deviceId": "37651704393-X5",
+      "kind": "sbf",
+      "subject": "hardwareService.data.Payload.37651704393-X5.sbf.telemetry"
+    },
+    {
+      "deviceId": "0123456789-M9",
+      "kind": "ubx",
+      "subject": "hardwareService.data.Payload.0123456789-M9.ubx.telemetry"
+    }
+  ]
+}
+```
+
+#### 2. restart
+Restart devices (software reset + USB reset for 'all').
+
+**Request (all devices):**
+```json
+{
+  "command": "restart",
+  "targets": "all"
+}
+```
+
+**Request (specific devices):**
+```json
+{
+  "command": "restart",
+  "targets": {
+    "deviceIds": ["37651704393-X5", "0123456789-M9"]
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "event": "restart",
+  "status": "started",
+  "targets": "all"
+}
+```
+
+**Restart Sequence (targets='all'):**
+1. Software reset sent to each device
+2. `device.close()` called (0.5s port release delay)
+3. Devices removed from topology
+4. Empty topology published (clients notified)
+5. USB subsystem reset (1.5s + 5s USB re-enumeration)
+6. Scan loop resumes and rediscovers devices
+
+**Restart Events:**
+```json
+{"event": "restart.start", "targets": "all", "ts": 1234567890}
+{"event": "restart.done", "ok": true, "restarted": 2, "errors": [], "ts": 1234567895}
+```
+
+#### 3. applyConfig
+Send configuration bytes to a device.
+
+**Request:**
+```json
+{
+  "command": "applyConfig",
+  "deviceId": "37651704393-X5",
+  "configBytes": [101, 115, 111, 99],
+  "label": "Enable RTK mode"
+}
+```
+
+**configBytes formats:**
+- Byte array: `[101, 115, 111, 99]`
+- String: `"esoc, USB1, ReceiverSetup \n"` (auto-encoded)
+
+**Response:**
+```json
+{
+  "event": "configApplied",
+  "status": "confirmed",
+  "deviceId": "37651704393-X5",
+  "bytesLength": 4,
+  "bytesPreview": "[101, 115, 111, 99]"
+}
+```
+
+**Status Values:**
+- `confirmed`: Device acknowledged command
+- `applied`: Command sent successfully (no acknowledgement)
+- `offline`: Device not in topology
+- `error`: Command failed (see `error` field)
+
+**Audit Logging:**
+All config operations logged to `sdk/hardwareService/logging/{deviceId}.csv`:
+```csv
+TimeUTC,DeviceId,Label,BytesHex,Status,ErrorMsg
+2026-01-16T10:30:45Z,37651704393-X5,Enable RTK,65736f63...,confirmed,
+```
+
+#### 4. getConfigHistory
+Retrieve configuration audit log for a device.
+
+**Request:**
+```json
+{
+  "command": "getConfigHistory",
+  "deviceId": "37651704393-X5",
+  "startTime": "2026-01-16T00:00:00Z"
+}
+```
+
+**Response:**
+```json
+{
+  "event": "configHistory",
+  "deviceId": "37651704393-X5",
+  "startTime": "2026-01-16T00:00:00Z",
+  "count": 5,
+  "entries": [
+    {
+      "TimeUTC": "2026-01-16T10:30:45Z",
+      "DeviceId": "37651704393-X5",
+      "Label": "Enable RTK",
+      "BytesHex": "65736f63...",
+      "Status": "confirmed",
+      "ErrorMsg": ""
+    }
+  ]
+}
+```
+
+### Adding New Commands
+
+**1. Edit `hardwareService.py` → `handleControl()` function:**
+
+```python
+elif command == 'myCommand':
+    param1 = msg.get('param1')
+    param2 = msg.get('param2')
+    
+    # Validate parameters
+    if not param1:
+        response = {"error": "Missing param1"}
+    else:
+        # Perform operation
+        result = await self._myOperation(param1, param2)
+        response = {"event": "myCommandResult", **result}
+```
+
+**2. Document in API.txt** (this file)
+
+---
+
+## 5. Event Streaming (PUB/SUB Interface)
+
+### Event Subject
+Service lifecycle events published to: `hardwareService.events.{containerId}`
+
+**Topology Updates:**
+```json
+{
+  "event": "topology",
+  "containerId": "Payload",
+  "devices": [...]
+}
+```
+
+**Restart Events:**
+```json
+{"event": "restart.start", "targets": "all", "ts": 1234567890}
+{"event": "restart.done", "ok": true, "restarted": 2, "errors": [], "ts": 1234567895}
+```
+
+### Data Subjects
+Device data published to: `hardwareService.data.{containerId}.{deviceId}.{kind}.{dataType}`
+
+**Subject Components:**
+- `{containerId}`: Service instance identifier
+- `{deviceId}`: Unique device identifier (e.g., `37651704393-X5`)
+- `{kind}`: Device type (e.g., `sbf`, `ubx`, `digitalOscope`)
+- `{dataType}`: Data classification (e.g., `telemetry`, `samples`)
+
+**Device Type → Data Type Mapping:**
+```python
+{
+    'sbf': 'telemetry',          # SBF GNSS data
+    'ubx': 'telemetry',          # UBX GNSS data
+    'digitalOscope': 'samples',  # Digital scope samples
+    'analogOscope': 'samples'    # Analog scope samples
+}
+```
+
+---
+
+## 6. Consumer Application Integration
+
+### Step-by-Step Integration
+
+**1. Initialize Transport:**
+```python
+from sdk.transport import createTransport
+from sdk.hardwareService.subjects import SubjectBuilder
+
+# Connect to transport
+transport = createTransport('nng+ipc:///tmp/hwService')
+await transport.connect('nng+ipc:///tmp/hwService')
+
+# Create subject builder
+subjects = SubjectBuilder('hardwareService', containerId='Payload')
+```
+
+**2. Discover Devices:**
+```python
+# Send getTopology command
+async def getTopology():
+    request = json.dumps({"command": "getTopology"}).encode()
+    response = await transport.request(subjects.control(), request, timeout=5.0)
+    return json.loads(response.decode())
+
+topology = await getTopology()
+devices = topology['devices']
+# [{'deviceId': '37651704393-X5', 'kind': 'sbf', 'subject': '...'}]
+```
+
+**3. Subscribe to Device Data:**
+```python
+async def handleData(subject: str, payload: bytes):
+    # Process device data
+    print(f"Received {len(payload)} bytes from {subject}")
+
+# Subscribe to specific device
+for device in devices:
+    await transport.subscribe(device['subject'], handleData)
+
+# Or subscribe to all devices
+await transport.subscribe(f"hardwareService.data.{containerId}.>", handleData)
+```
+
+**4. Send Configuration:**
+```python
+async def configureDevice(deviceId: str, configBytes: bytes, label: str):
+    request = {
+        "command": "applyConfig",
+        "deviceId": deviceId,
+        "configBytes": list(configBytes),
+        "label": label
+    }
+    response = await transport.request(
+        subjects.control(),
+        json.dumps(request).encode(),
+        timeout=10.0
+    )
+    return json.loads(response.decode())
+
+result = await configureDevice(
+    "37651704393-X5",
+    b"esoc, USB1, ReceiverSetup \n",
+    "Query receiver setup"
+)
+print(result['status'])  # 'confirmed', 'applied', or 'error'
+```
+
+**5. Monitor Topology Changes:**
+```python
+async def handleEvents(subject: str, payload: bytes):
+    event = json.loads(payload.decode())
+    
+    if event['event'] == 'topology':
+        print(f"Topology updated: {len(event['devices'])} devices")
+    elif event['event'] == 'restart.start':
+        print("Restart initiated")
+    elif event['event'] == 'restart.done':
+        print(f"Restart complete: {event['restarted']} devices")
+
+await transport.subscribe(subjects.events(), handleEvents)
+```
+
+**6. Restart Devices:**
+```python
+async def restartAll():
+    request = json.dumps({"command": "restart", "targets": "all"}).encode()
+    response = await transport.request(subjects.control(), request, timeout=5.0)
+    return json.loads(response.decode())
+
+result = await restartAll()
+print(result)  # {"event": "restart", "status": "started", "targets": "all"}
+```
+
+### Complete Consumer Example
+
+```python
+import asyncio
+import json
+from sdk.transport import createTransport
+from sdk.hardwareService.subjects import SubjectBuilder
+
+class HardwareConsumer:
+    def __init__(self, transportUri: str, containerId: str):
+        self.transport = createTransport(transportUri)
+        self.subjects = SubjectBuilder('hardwareService', containerId=containerId)
+        self.devices = []
+    
+    async def start(self):
+        # Connect
+        await self.transport.connect(self.subjects._build('', '', '', '', '').split('.')[0])
+        
+        # Subscribe to events
+        await self.transport.subscribe(self.subjects.events(), self.handleEvent)
+        
+        # Discover devices
+        await self.refreshTopology()
+        
+        # Subscribe to device data
+        for device in self.devices:
+            await self.transport.subscribe(device['subject'], self.handleData)
+    
+    async def refreshTopology(self):
+        request = json.dumps({"command": "getTopology"}).encode()
+        response = await self.transport.request(
+            self.subjects.control(), request, timeout=5.0
+        )
+        topology = json.loads(response.decode())
+        self.devices = topology['devices']
+        print(f"Found {len(self.devices)} devices")
+    
+    async def handleEvent(self, subject: str, payload: bytes):
+        event = json.loads(payload.decode())
+        if event['event'] == 'topology':
+            print("Topology changed - refreshing")
+            self.devices = event['devices']
+    
+    async def handleData(self, subject: str, payload: bytes):
+        print(f"Data from {subject}: {len(payload)} bytes")
+    
+    async def stop(self):
+        await self.transport.close()
+
+# Usage
+consumer = HardwareConsumer('nng+ipc:///tmp/hwService', 'Payload')
+await consumer.start()
+# ... run event loop ...
+await consumer.stop()
+```
+
+---
+
+## 7. Configuration Files
+
+### config.json (hardwareService)
+Located: `sdk/hardwareService/config.json`
+
+```json
+{
+  "transport": "nng+ipc:///tmp/hwService",
+  "containerId": "Payload",
+  "scanIntervalSeconds": 5,
+  "topologyIntervalSeconds": 10,
+  "deviceTimeoutSeconds": 15,
+  "serialHints": [],
+  "deviceConfig": {}
+}
+```
+
+**Parameters:**
+- `transport`: Transport URI (NNG IPC or NATS)
+- `containerId`: Instance identifier for multi-container deployments
+- `scanIntervalSeconds`: Device discovery interval
+- `topologyIntervalSeconds`: Topology broadcast interval (deprecated - events used instead)
+- `deviceTimeoutSeconds`: Device inactivity timeout before removal
+- `serialHints`: List of specific serial ports to scan (empty = auto-detect all)
+- `deviceConfig`: Per-device configuration overrides (future use)
+
+### hardware-config.json (shared)
+Located: `sdk/../hardware-config.json` (workspace root)
+
+Shared configuration file used by hardwareService AND consumer applications.
+
+```json
+{
+  "configVersion": "1.0",
+  "hardware": {
+    "receivers": [
+      {"type": "X5", "serialNumber": null, "name": "X5"},
+      {"type": "M9", "serialNumber": null, "name": "M9"}
+    ],
+    "oscope": {"type": "digital", "triggerChannel": 1}
+  },
+  "ppsWiring": {
+    "0": {"name": "PPS In", "editable": false},
+    "1": {"name": "X5", "editable": false},
+    "2": {"name": "M9", "editable": false}
+  }
+}
+```
+
+**Purpose:**
+- **receivers**: Expected device types for validation/matching
+- **oscope**: Oscilloscope plugin selection and configuration
+- **ppsWiring**: PPS channel mapping for time synchronization
+
+**Critical**: The `name` field in receivers must match keys in consumer app configs!
+
+---
+
+## 8. Error Recovery & Restart Behavior
+
+### Automatic Error Recovery
+When a device encounters an error:
+
+**1. Exception Propagation:**
+```python
+# In device readLoop():
+data = await self.reader.read(4096)  # SerialException raised
+# Exception propagates to HardwareService
+```
+
+**2. Recovery Flow:**
+```
+Exception → runReadLoop() catches → device.close() → 
+remove from topology → publish topology update → 
+reset oscope discovery flag (if applicable)
+```
+
+**3. Rediscovery:**
+- Next scan cycle (default: 5s) probes ports
+- Device rediscovered by plugin
+- New instance created and started
+- Topology updated with new device
+
+### Manual Restart Behavior
+
+**Individual Device Restart:**
+1. Cancel readLoop task
+2. Send software reset (if supported)
+3. Close device (0.5s port release)
+4. Remove from topology
+5. Rescan rediscovers device
+
+**Global Restart (targets='all'):**
+1. Set `_restartInProgress` flag (stops scanning)
+2. Software reset + close all devices
+3. Clear topology completely
+4. Publish empty topology (clients notified)
+5. Wait 1.5s for port release
+6. USB subsystem reset (platform-specific)
+7. Wait 5s for USB re-enumeration
+8. Clear flag, resume scanning
+9. Devices rediscovered and restarted
+
+**USB Reset Implementation:**
+- **Linux**: Unbind/rebind USB hub controllers via sysfs (requires sudo)
+- **Windows**: PnP device restart via PowerShell (requires Administrator)
+- **macOS**: Kernel extension unload/reload (unreliable, not recommended)
+- Critical delays prevent port conflicts and allow USB re-enumeration
+
+### Device Timeout Behavior
+If device not seen in scan for `deviceTimeoutSeconds` (default: 15s):
+1. Device marked stale
+2. `device.close()` called
+3. Remove from topology
+4. Publish topology update
+5. Next scan can rediscover if reconnected
+
+---
+
+## 9. Testing & Validation
+
+### Regression Testing
+Located: `sdk/hardwareService/regressionTest.py`
+
+**Test Categories:**
+1. **Topology Discovery**: Verify devices found
+2. **Data Streaming**: Confirm data flow from all devices
+3. **Configuration**: Test config application and audit logging
+4. **Restart**: Validate restart commands and recovery
+5. **Error Handling**: Simulate failures and verify recovery
+
+**Running Tests:**
+```bash
+cd sdk/hardwareService
+python regressionTest.py
+```
+
+### Manual Testing
+
+**1. Check Service Status:**
+```bash
+# View logs
+tail -f sdk/hardwareService/logging/*.log
+
+# Or use API
+echo '{"command":"getTopology"}' | nc -U /tmp/hwService
+```
+
+**2. Test Device Discovery:**
+```python
+# Run service with debug logging
+LOG_LEVEL=DEBUG python -m sdk.hardwareService
+```
+
+**3. Verify Data Streaming:**
+```bash
+# Subscribe to all data (NATS)
+nats sub "hardwareService.data.>"
+
+# Subscribe to specific device (NNG - requires custom tool)
+nng-sub "hardwareService.data.Payload.37651704393-X5.sbf.telemetry"
+```
+
+**4. Test Configuration:**
+```python
+result = await transport.request(
+    subjects.control(),
+    json.dumps({
+        "command": "applyConfig",
+        "deviceId": "37651704393-X5",
+        "configBytes": list(b"esoc, USB1, ReceiverSetup \n"),
+        "label": "Test config"
+    }).encode(),
+    timeout=10.0
+)
+print(result)
+```
+
+---
+
+## 10. Advanced Topics
+
+### Multi-Container Deployment
+Run multiple hardwareService instances with different containerIds:
+
+**Container 1 (Payload):**
+```json
+{"containerId": "Payload", "transport": "nats://localhost:4222"}
+```
+
+**Container 2 (Ground):**
+```json
+{"containerId": "Ground", "transport": "nats://localhost:4222"}
+```
+
+**Consumer subscribes to both:**
+```python
+await transport.subscribe("hardwareService.data.Payload.>", handlePayload)
+await transport.subscribe("hardwareService.data.Ground.>", handleGround)
+```
+
+### Custom IoLayer Transports
+Extend IoLayer for custom hardware interfaces:
+
+```python
+class IoLayer:
+    async def openConnection(self, transportType: str, **kwargs):
+        if transportType == 'canbus':
+            return await self._openCANBus(**kwargs)
+        # ... existing code ...
+    
+    async def _openCANBus(self, interface: str, bitrate: int):
+        # Implement CAN bus connection
+        pass
+```
+
+### Device-Specific Control Subjects
+For direct device control:
+
+```python
+# General control (all devices)
+subjects.control()  # hardwareService.control.Payload
+
+# Device-specific control
+subjects.control(deviceId)  # hardwareService.control.Payload.37651704393-X5
+```
+
+### Extending Command Interface
+Add custom commands without modifying core:
+
+```python
+# In plugin.configure():
+async def customCommandHandler(subject: str, request: bytes) -> bytes:
+    msg = json.loads(request.decode())
+    # Handle custom command
+    return json.dumps({"result": "success"}).encode()
+
+# Register handler
+await transport.registerHandler(
+    f"{subjects.control()}.custom",
+    customCommandHandler
+)
+```
+
+---
+
+## 11. Troubleshooting
+
+### Common Issues
+
+**Issue**: Devices not discovered
+- Check `serialHints` in config.json (empty = auto-detect)
+- Verify hardware-config.json oscope type matches hardware
+- Check port permissions (Linux: add user to `dialout` group)
+- View logs: scan results show tested ports
+
+**Issue**: Port access denied errors
+- Windows: Close other apps using serial ports (Arduino IDE, PuTTY, etc.)
+- Linux: `sudo usermod -a -G dialout $USER` (logout/login required)
+- Increase port release delays in plugins (0.5s → 1.0s)
+
+**Issue**: USB reset fails
+- Linux: Check USB controller permissions
+- Windows: Run as Administrator for PnP operations
+- Verify `restartManager.py` platform detection
+
+**Issue**: Configuration not applied
+- Check deviceId matches topology
+- Verify device has `writeTo()` method
+- Check audit log: `sdk/hardwareService/logging/{deviceId}.csv`
+- Increase command timeout in applyConfig
+
+**Issue**: Data not streaming
+- Verify subscription subject matches topology subject
+- Check transport connection status
+- Confirm device readLoop() not crashed (check logs)
+- Test with: `await getTopology()` to verify device online
+
+**Issue**: Topology updates not received
+- Subscribe to events subject: `hardwareService.events.{containerId}`
+- Verify containerId matches service instance
+- Check transport connection persistent
+
+### Debug Logging
+Enable detailed logging:
+
+```python
+# In code
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
+# Or environment variable
+export LOG_LEVEL=DEBUG
+```
+
+**Log Locations:**
+- Service logs: `sdk/hardwareService/logging/*.log`
+- Config audit: `sdk/hardwareService/logging/{deviceId}.csv`
+
+---
+
+## 12. Best Practices
+
+### Plugin Development
+- Implement proper port release delays (0.5s minimum)
+- Handle probe timeouts gracefully
+- Return empty list on probe failure (don't raise)
+- Include metadata needed for device creation
+- Test with multiple devices simultaneously
+
+### Device Implementation
+- Let exceptions propagate from readLoop()
+- Implement writeTo() for configuration support
+- Update self.lastSeen for activity tracking
+- Handle partial/incomplete data gracefully
+- Close resources in close() method
+
+### Consumer Applications
+- Always use SubjectBuilder for consistency
+- Subscribe to events for topology changes
+- Handle empty topology during restarts
+- Implement reconnection logic for transport failures
+- Use timeouts on request() calls
+- Cache topology locally and refresh on events
+
+### Configuration Management
+- Use meaningful labels for config commands
+- Monitor audit logs for failed operations
+- Implement config validation before sending
+- Handle offline devices gracefully
+- Use short timeouts for config operations
+
+### Error Handling
+- Don't mask device errors - let them propagate
+- Monitor events subject for service health
+- Implement backoff for repeated failures
+- Log all errors with context
+- Handle topology changes dynamically
+
+---
+
+## 13. Reference
+
+### File Structure
+```
+sdk/hardwareService/
+├── main.py                    # Entry point, HardwareServiceApp
+├── hardwareService.py         # Core service logic, HardwareService class
+├── config.json                # Service configuration
+├── configManager.py           # Configuration management and audit
+├── ioLayer.py                 # Transport abstraction
+├── subjects.py                # SubjectBuilder for naming
+├── restartManager.py          # USB reset functionality
+├── regressionTest.py          # Automated testing
+├── plugins/
+│   ├── basePlugin.py          # Plugin interface
+│   ├── sbfPlugin.py           # SBF GNSS plugin
+│   ├── ubxPlugin.py           # UBX GNSS plugin
+│   ├── digitalOscopePlugin.py # Digital scope plugin
+│   └── analogOscopePlugin.py  # Analog scope plugin
+├── devices/
+│   ├── baseDevice.py          # Device interface
+│   ├── sbfDevice.py           # SBF device implementation
+│   ├── ubxDevice.py           # UBX device implementation
+│   ├── digitalOscopeDevice.py # Digital scope implementation
+│   └── analogOscopeDevice.py  # Analog scope implementation
+└── logging/
+    └── {deviceId}.csv         # Per-device config audit logs
+
+../hardware-config.json        # Shared hardware configuration
+```
+
+### Quick Reference: Subject Patterns
+
+| Purpose | Subject | Direction |
+|---------|---------|-----------|
+| Control | `hardwareService.control.{container}` | REQ → REP |
+| Events | `hardwareService.events.{container}` | PUB → SUB |
+| Data | `hardwareService.data.{container}.{deviceId}.{kind}.{dataType}` | PUB → SUB |
+| Topology | `hardwareService.topology.{container}` | PUB → SUB |
+| Discovery | `hardwareService.discovery` | PUB → SUB (NATS only) |
+
+### Quick Reference: Command Summary
+
+| Command | Purpose | Parameters | Response Event |
+|---------|---------|------------|----------------|
+| getTopology | Get active devices | none | topology |
+| restart | Restart devices | targets | restart |
+| applyConfig | Send config to device | deviceId, configBytes, label | configApplied |
+| getConfigHistory | Get config audit log | deviceId, startTime | configHistory |
+
+### Quick Reference: Status Codes
+
+| Status | Meaning | Action |
+|--------|---------|--------|
+| confirmed | Device acknowledged | Success |
+| applied | Sent, no ack | Success (may verify manually) |
+| offline | Device not found | Check topology |
+| error | Command failed | Check error field |
+
+---
+
+## Document Version
+- **Version**: 2.0
+- **Last Updated**: 2026-01-16
+- **Based on**: hardwareService implementation as of 2026-01-16
+
+This API guide comprehensively documents the hardwareService implementation. Follow the patterns and examples above for reliable integration, device development, and system extension.

@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Map Visualization</title>
+    <link rel="stylesheet" href="{{ cesium_css_path or '/static/cesium/Build/Cesium/Widgets/widgets.css' }}" />
+    <script>
+      window.cesiumBaseUrl = "{{ cesium_base_url or '/static/cesium/Build/Cesium/' }}";
+      window.CESIUM_BASE_URL = "{{ cesium_base_url or '/static/cesium/Build/Cesium/' }}";
+    </script>
+    <script src="{{ cesium_js_path or '/static/cesium/Build/Cesium/Cesium.js' }}"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        #appHeader { position: absolute; top: 0; left: 0; right: 0; background: rgba(0, 0, 0, 0.8); color: white; padding: 10px 20px; z-index: 1000; display: flex; justify-content: space-between; align-items: center; }
+        #appHeader h1 { font-size: 1.2rem; margin: 0; }
+        #statusBar { display: flex; gap: 15px; font-size: 0.9rem; }
+        #globeContainer { width: 100%; height: 100%; position: absolute; top: 0; left: 0; }
+        .cesium-viewer { width: 100%; height: 100%; }
+    </style>
+</head>
+<body>
+    <div id="appHeader">
+        <h1>{{ title or 'Map Visualization' }}</h1>
+        <div id="statusBar">
+            <span id="wsStatus">WS: disconnected</span>
+        </div>
+    </div>
+    <div id="globeContainer"></div>
+    <script>
+        // Disable Cesium Ion for offline operation
+        typeof Cesium !== 'undefined' && Cesium.Ion && (Cesium.Ion.defaultAccessToken = '');
+        
+        // Initialize Cesium Viewer for offline use - NO imageryProvider to prevent Ion calls
+        const viewer = new Cesium.Viewer('globeContainer', {
+            terrainProvider: new Cesium.EllipsoidTerrainProvider({}),
+            baseLayerPicker: false,
+            geocoder: false,
+            homeButton: false,
+            sceneModePicker: false,
+            timeline: false,
+            navigationHelpButton: false,
+            animation: false,
+            fullscreenButton: false
+        });
+
+        try { viewer.imageryLayers.removeAll(); } catch (e) {}
+        
+        viewer.scene.backgroundColor = Cesium.Color.BLACK;
+        viewer.scene.globe.enableLighting = false;
+        viewer.cesiumWidget.creditContainer.style.display = 'none';
+
+        window.viewer = viewer;
+
+        // WebSocket connection
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${wsProtocol}//${window.location.host}{{ websocket_route or '/ws-map' }}`;
+        let ws = null;
+        const statusEl = document.getElementById('wsStatus');
+        const entities = {};
+
+        function connect() {
+                ws = new WebSocket(wsUrl);
+                
+                ws.onopen = () => {
+                    statusEl.textContent = 'WS: connected';
+                    statusEl.style.color = '#4ade80';
+                };
+                
+                ws.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'update' && data.assets) {
+                            updateAssets(data.assets);
+                        }
+                    } catch (e) {
+                        console.error('WebSocket message error:', e);
+                    }
+                };
+                
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    statusEl.textContent = 'WS: error';
+                    statusEl.style.color = '#ef4444';
+                };
+                
+                ws.onclose = () => {
+                    statusEl.textContent = 'WS: disconnected';
+                    statusEl.style.color = '#fbbf24';
+                    setTimeout(connect, 2000);
+                };
+            }
+
+            function updateAssets(assets) {
+                for (const [name, asset] of Object.entries(assets)) {
+                    const position = Cesium.Cartesian3.fromDegrees(asset.lon, asset.lat, asset.alt);
+                    
+                    if (!entities[name]) {
+                        entities[name] = viewer.entities.add({
+                            name: name,
+                            position: position,
+                            point: {
+                                pixelSize: 10,
+                                color: Cesium.Color.fromBytes(...asset.color),
+                                outlineColor: Cesium.Color.WHITE,
+                                outlineWidth: 2
+                            },
+                            label: {
+                                text: name,
+                                font: '14pt sans-serif',
+                                fillColor: Cesium.Color.WHITE,
+                                outlineColor: Cesium.Color.BLACK,
+                                outlineWidth: 2,
+                                verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+                                pixelOffset: new Cesium.Cartesian2(0, -15)
+                            },
+                            path: {
+                                show: true,
+                                leadTime: 0,
+                                trailTime: asset.trailTime || 120,
+                                width: 2,
+                                material: new Cesium.PolylineGlowMaterialProperty({
+                                    glowPower: 0.1,
+                                    color: Cesium.Color.fromBytes(...asset.color)
+                                })
+                            }
+                        });
+                    } else {
+                        entities[name].position = position;
+                    }
+                }
+            }
+
+            connect();
+    </script>
+</body>
+</html>

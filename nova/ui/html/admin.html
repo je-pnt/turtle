@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NOVA - Admin Panel</title>
+    <link rel="icon" href="/ui/favicon.ico" type="image/x-icon">
+    <link rel="stylesheet" href="/ui/css/styles.css">
+    <link rel="stylesheet" href="/ui/css/auth.css">
+</head>
+<body class="admin-page">
+    <div class="admin-container">
+        <header class="admin-header">
+            <h1>NOVA Admin Panel</h1>
+            <div class="admin-nav">
+                <a href="/" class="nav-link">← Back to NOVA</a>
+                <span id="adminUser" class="admin-user"></span>
+            </div>
+        </header>
+        
+        <main class="admin-main">
+            <section class="admin-section">
+                <h2>User Management</h2>
+                
+                <div class="admin-toolbar">
+                    <span id="userCount" class="user-count">Loading users...</span>
+                    <button id="refreshBtn" class="toolbar-btn">Refresh</button>
+                </div>
+                
+                <table class="users-table" id="usersTable">
+                    <thead>
+                        <tr>
+                            <th>Username</th>
+                            <th>Role</th>
+                            <th>Status</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="usersTableBody">
+                        <!-- Users populated by JS -->
+                    </tbody>
+                </table>
+            </section>
+        </main>
+    </div>
+    
+    <script src="/ui/js/admin.js"></script>
+</body>
+</html>
