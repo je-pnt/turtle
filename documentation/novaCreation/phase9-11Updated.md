@@ -165,57 +165,111 @@ Acceptance criteria:
 
 ---
 
-# Phase 10 — Presentation system + Cesium geospatial background (local-only)
+# Phase 10 — Presentation (view-only) + Cesium geospatial background (local-only)
 
-## 10.1 Presentation system (defaults + overrides; extensible but controlled)
+## Phase 10 guiding rules (do not violate)
+- **Presentation is NOT truth.** It is a per-user, timeless, stateless override dictionary used only for UI and export labeling/appearance. It must not affect telemetry truth, identity, ordering, or determinism.
+- **Manifests are published once** (when loaded at server/session start) and **UiUpdates must not carry manifest refs** (no stream bloat). During live and replay, interpret UiUpdates using the **last published manifest** at or before the current cursor/playhead time.
+- **Seek reconstruction is bounded:** load the **last UiCheckpoint** then apply **recent UiUpdates within timeout** (default 120s), not full-history scans.
+- **All rate/cadence knobs are config-driven** (no hardcoding in code paths). Defaults are defined below.
 
-### Goals
-- Admin sets **system defaults** that apply to other users **only if** they haven’t set their own overrides.
-- Users set personal overrides that apply across their sessions/instances in that scope.
+---
 
-### Layers (simple, deterministic)
-For each key:
-1) **User override** (per-user, scope)
+## 10.1 Presentation system (view-only; per-user overrides + admin defaults)
+
+### Purpose
+Provide user-friendly names and map styling without changing truth data:
+- Rename shields/entities for the current user
+- Select local 3D models
+- Choose colors
+- Adjust scale
+
+### What presentation is (and is not)
+- **Is:** a per-user dictionary of overrides applied at render/export time.
+- **Is NOT:** a truth lane, not a time-aligned stream, not replay-deterministic, not used for telemetry semantics.
+
+### Identity model (explicit)
+- `userId` is the user's **unique username** (NOVA ensures uniqueness).
+- `scopeId` is the **literal scope string** used in subjects and API calls (use it exactly as-is).
+- Entity identity for overrides is keyed by the entity's stable `uniqueId`.
+
+### Allowed keys (Phase 10 minimal key set — no expansion)
+Each entity (by `uniqueId`) may have:
+- `displayName`: string (default = `uniqueId`)
+- `modelRef`: enum from dropdown (must resolve to an existing, valid local model file)
+- `color`: RGB triple (from selector)
+- `scale`: float
+
+No other keys are permitted in Phase 10.
+
+### Inheritance / layering (simple, deterministic)
+For each key, effective value resolves as:
+1) **User override** (per-user, per-scope)
 2) **Admin default** (scope-wide)
-3) **Producer hint** (if provided; optional)
-4) **Factory default** (static file in repo)
+3) **Factory default** (static base default; minimal)
 
-Resolution rule:
-- Highest available layer wins **per key**.
-
-### Extensible keys without bloat
-- Create a single **PresentationSchema registry** (one file / one module) that defines:
-  - allowed keys
-  - types (string, color, modelRef, etc.)
-  - applicable target types (entity, stream, run, event, etc.)
-  - validation rules and fallbacks
-
-Keys can grow, but only by adding them to this registry.
-
-### Persistence + propagation
-- Admin defaults and user overrides are persisted as **metadata truth events** (replayable, time-aligned).
-- Changes propagate immediately:
-  - Admin changes → all users in scope (except overridden keys)
-  - User changes → all instances for that user
-- Conflict: last write wins.
+Rule:
+- Highest available layer wins per key.
+- Absence means “inherit.”
+- Last write wins within the same layer.
 
 ### UI surfaces
-- Admin UI: edit defaults, apply immediately to scope (non-destructive to user overrides)
-- User UI: edit personal overrides
+- **Admin UI:** edit scope-wide defaults (non-destructive to user overrides).
+- **User UI:** edit personal overrides (timeless; may change during live or replay at any time).
+
+### Model selection rules (local-only)
+- Implementation must follow the working `/svs` reference pattern (locally hosted Cesium, imagery, models).
+- Dropdown options are produced from locally hosted assets.
+- Only **`.gltf`** models are allowed in Phase 10 and must be type-checked before presenting as an option.
 
 Acceptance criteria:
-- Admin default change updates all users who have not overridden that key.
-- User override persists and takes precedence.
-- Updates propagate across multiple sessions/instances.
+- User can rename an entity during replay and see it update immediately (view-only).
+- Admin defaults apply where the user has not overridden.
+- No presentation change modifies telemetry truth or breaks replay determinism (presentation is strictly view-layer).
 
-## 10.1B UI lane replay contract (required)
+---
 
-UI state must remain replayable and deterministic:
-- UI lane emits **UiUpdate** and **UiCheckpoint** events that reference **ManifestId/ManifestVersion**.
-- Manifests are published as truth (e.g., **ManifestPublished**) and checkpoints reference a published version.
-- Cesium and UI rendering consume UI lane updates that are derived from this replayable UI state.
+## 10.1B UI lane replay contract (manifest-published; checkpoint + recent deltas)
 
-## 10.2 Cesium geospatial view (page background)
+### Manifest publishing (no UiUpdate bloat)
+- On server/session start (when the UI manifest is loaded), the server emits exactly one truth event:
+  - **ManifestPublished(scopeId, manifestId, manifestVersion/hash)**
+- Manifests rarely change. If they do, the server publishes a new ManifestPublished event at the time it is loaded.
+
+**Interpretation rule (explicit):**
+- During live and replay, interpret UiUpdates using the **most recent ManifestPublished** event at or before the current cursor/playhead time.
+- UiUpdates must not include manifest references per event.
+
+### UiCheckpoint cadence (config-driven)
+- Emit a **UiCheckpoint** at session start.
+- Emit periodic UiCheckpoint events every `uiCheckpointIntervalSeconds`.
+  - Default: **500 seconds**
+  - Config-driven (not hardcoded).
+
+### Seek / load reconstruction rule (bounded, explicit)
+When the playback time changes (seek/scrub) or a client loads:
+1) Load the **last known UiCheckpoint** for the target scope.
+2) Load and apply **UiUpdate** events within `uiHistoryTimeoutSeconds` of the target time.
+   - Default: **120 seconds**
+   - Config-driven (not hardcoded).
+
+Thus, reconstruction is:
+> **checkpoint + recent UiUpdates within timeout**
+
+No full-history reconstruction is required in Phase 10.
+
+### UiUpdate rate guidance (config-driven; simplest batching only)
+- `uiUpdateMaxHz` default: **5 Hz** (config-driven).
+- If (and only if) it is trivially simple, the server may coalesce updates to meet the max rate:
+  - Coalesce by `(scopeId, uniqueId)`
+  - Keep only the most recent update per entity per window
+  - Do not change semantics; persist what is served
+
+If batching becomes complex, skip it and keep pass-through.
+
+---
+
+## 10.2 Cesium geospatial view (page background; local-only)
 
 ### Layout
 - Cesium is the **full-page background** behind panels and chat.
@@ -224,43 +278,25 @@ UI state must remain replayable and deterministic:
 ### Data source
 - Geospatial updates come from **UI lane** messages.
 - Minimum fields (Phase 10): `lat`, `lon`, `alt`
-- Identity for each entity must be stable (whatever identity scheme is already used).
+- Identity for each entity must be stable (use established NOVA identity scheme).
 
 ### Clock control (low overhead, low drift)
 - Cesium time is driven by **cursor time**.
 - Use `SampledPositionProperty` for entity positions.
-- **Interpolation mode:** linear.
-- **Rate guidance:**
-  - Target a **max effective update of 5 Hz** for Cesium positioning inputs.
-  - Keep NOVA server-side UI updates well below that where possible.
-  - Downsample if upstream updates exceed this (to avoid memory bloat).
+- Interpolation mode: linear.
+- The UI must not free-run Cesium time away from cursor time.
 
-> Implementation note: Cesium can render smoothly between samples using interpolation; do not allow Cesium’s internal clock to free-run away from cursor time.
-
-### Local-only assets (no internet calls)
-- Cesium JS must be served locally by NOVA (no CDN).
-- Models served locally:
-  - Provide a local folder of GLTF/GLB models.
-  - `modelRef` resolves to local model assets.
-- Imagery/tiles: **not implemented in Phase 10**
-  - Architect Cesium initialization so imagery providers can be added later without refactor.
-  - Ensure no part of Cesium setup triggers external fetches.
-  - (Reference: novaCore handled fully-local Cesium well; follow that pattern.)
-
-### Map abstraction (future readiness)
-- Provide a minimal adapter boundary so map implementation isn’t fused to app logic:
-  - `setTime(cursorTime)`
-  - `upsertPose(identity, lat, lon, alt)`
-  - `applyPresentation(identity, displayName, color, modelRef)`
-  - `remove(identity)`
+### Local-only assets (zero internet calls)
+- Cesium JS served locally by NOVA (no CDN).
+- Models served locally (Phase 10: `.gltf` only; type-checked before listing).
+- Imagery served locally (follow `/svs` reference); no external fetches.
 
 Acceptance criteria:
 - No external network calls (verified).
 - Live mode: entities update correctly.
-- Replay: scrub updates positions and labels correctly with cursor time.
-- Presentation changes update map visuals immediately.
+- Replay: scrub updates positions correctly with cursor time.
+- Presentation overrides change map visuals immediately without changing truth.
 
----
 
 # Phase 11 — Replays tab + Run manifests + Driver bundle downloads
 

@@ -2,6 +2,15 @@
 
 **Scope:** This document is the single implementation plan for all remaining work in **Phases 9–11** (post–Phase 8/8.1), as discussed in our chat. It is intended to be complete and implementable without guessing.
 
+
+**Phase scope note (redefined):**
+- **Phase 9:** Auth + admin approval + roles + replayable chat
+- **Phase 10:** Admin controls + user-defined presentations/overrides + Cesium geospatial background
+- **Phase 11:** Replay service (runs/manifests/bundle export)
+- **Phase 12:** Ground/Archive mode (moved out of this plan; intentionally not covered here)
+
+This plan intentionally redefines scope vs any older phase numbering. Ground/Archive mode work is deferred to Phase 12.
+
 ---
 
 ## Global invariants (do not violate)
@@ -19,12 +28,10 @@
 
 3) **Replay safety**
 - Replay must not trigger **hardware/C2 effects**.
-- Serving data (UI updates, TCP stream-out, exports) is allowed.
+- Serving data (UI updates, TCP/UDP/WS stream-out, exports) is allowed.
 
 4) **UI lane drives the webpage UI**
 - The geospatial layer and operator UI are driven from **UI lane** messages.
-- UI lane events MUST be **UiUpdate/UiCheckpoint** and MUST reference **ManifestId + ManifestVersion**.
-- **ManifestPublished** metadata events MUST be recorded as truth to make UI replay deterministic.
 - Metadata is available by subscription/request, but we do not require it for the base geospatial rendering.
 
 5) **Last write wins**
@@ -40,12 +47,15 @@
 - Uses WebSocket stream-out for parsed lane when desired.
 
 ### B) Stream-out transports (already implemented in Phase 8/8.1; referenced here for Phase 9–11 behavior)
-- **TCP stream-out** is the only required stream-out in Phases 9â€“11.
-- **UDP/WS stream-out** are explicitly **future** and MUST NOT introduce a second API or transport. If added later, they are output forks that read from truth and are served only by the Server edge, using the same Core IPC and auth model as TCP/WS UI.
+- **TCP, UDP, WebSocket stream-out** behave as *dumb pipes* for selected data.
 - Output format options (per stream definition):
   - **payloadOnly:** send only the payload bytes/JSON payload as-is.
   - **identityWrapped:** send a flat dictionary/object that includes identity keys plus the payload.
 
+
+Alignment note:
+- TCP is the baseline; UDP and WebSocket are alternate transports using the same stream-out definition shape and auth gating.
+- Transport choice must not introduce a separate control plane or alter selection/timeline-binding semantics.
 > Note: Metadata integration for stream-out (e.g., “also subscribe to metadata”) is **future** and is not required in Phases 9–11.
 
 ---
@@ -57,7 +67,8 @@
 ### Roles
 - `admin`
 - `operator`
-- `viewer` (read-only: query/stream; no commands, exports, or admin)
+
+Viewer role is intentionally omitted (removed from scope).
 
 ### Signup + approval workflow
 1) **Sign up**
@@ -92,7 +103,6 @@ Recommended defaults (safe, simple):
   - approve/deny/disable/delete users
   - promote/demote roles
   - reset passwords
-  - view all scopes’ chat
 - Operator:
   - normal UI, replays, exports, stream management (as already implemented)
 
@@ -131,8 +141,10 @@ Acceptance criteria:
 - On send: message draft clears.
 
 ### Storage + streaming
-- Each chat message is stored as a **metadata truth event**, with:
-  - `scopeId`, `userId`, `username`, `sentTime`, `messageText`
+- Each chat message is stored as a **standard metadata truth event** using the system’s normal **truth envelope contract** (e.g., lane=metadata, messageType, sourceTruthTime, identity fields, ordering contract).
+- Chat payload fields (minimum): `username`, `userId`, `messageText`.
+- Identity: use the project’s established **scope-global identity** convention (e.g., uniqueId="__scope__" or equivalent).
+- Ordering/determinism: rely on the standard truth ordering contract; do not introduce custom sorting.
 - On page load:
   - Load recent history (e.g., last N messages; pick a reasonable N such as 200).
 - Live updates:
@@ -195,6 +207,13 @@ Acceptance criteria:
 - Admin default change updates all users who have not overridden that key.
 - User override persists and takes precedence.
 - Updates propagate across multiple sessions/instances.
+
+## 10.1B UI lane replay contract (required)
+
+UI state must remain replayable and deterministic:
+- UI lane emits **UiUpdate** and **UiCheckpoint** events that reference **ManifestId/ManifestVersion**.
+- Manifests are published as truth (e.g., **ManifestPublished**) and checkpoints reference a published version.
+- Cesium and UI rendering consume UI lane updates that are derived from this replayable UI state.
 
 ## 10.2 Cesium geospatial view (page background)
 
@@ -299,6 +318,13 @@ Acceptance criteria:
 
 ## 11.5 Storage layout (per-user run folders)
 
+### Architectural note: runs are **not truth**
+- Runs are **user artifacts/config**, not truth.
+- Creating/editing runs must **not** emit truth events that alter replay-visible system state.
+- Runs only drive: (a) UI convenience (clamp window), and (b) export/bundle generation.
+- Exports are generated from the truth DB; run files merely define the requested window/config.
+
+
 ### Directory layout
 - Each user has a folder: `data/users/<username>/`
 - Runs folder: `data/users/<username>/runs/`
@@ -369,6 +395,7 @@ Acceptance criteria:
 ---
 
 ## Notes / explicitly deferred items
+- Audit logging/events (login/admin actions/export requests) — deferred to a later phase.
 - Offline imagery/tiles integration for Cesium (architecture ready; implement later).
 - Metadata subscription requirements for stream-out clients (future).
 - Additional presentation keys beyond those registered in PresentationSchema (future; add intentionally).

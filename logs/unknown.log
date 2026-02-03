@@ -1,5 +1,0 @@
-2026-01-31 18:06:54,314 - diamondback - unknown - INFO - ============================================================ [taskName=None]
-2026-01-31 18:06:54,314 - diamondback - unknown - INFO - NOVA 2.0 - Timeline Truth System [taskName=None]
-2026-01-31 18:06:54,314 - diamondback - unknown - INFO - ============================================================ [taskName=None]
-2026-01-31 18:06:54,314 - diamondback - unknown - INFO - Config: nova/config.json [taskName=None]
-2026-01-31 18:06:54,314 - diamondback - unknown - ERROR - Config file not found: nova/config.json [taskName=None]
