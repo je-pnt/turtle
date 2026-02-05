@@ -40,25 +40,40 @@
 
         <!-- Main Content Area -->
         <main class="main" id="mainContent">
-            <!-- Left Sidebar: Entities/Streams/Tasks -->
+            <!-- Left Sidebar: Entities/Streams/Replays -->
             <aside class="sidebar" id="sidebar" aria-label="Main Panel">
                 <div class="panel-header">
                     <h3 class="panel-title">Main Panel</h3>
                 </div>
-                <nav class="entity-tree" id="entityTree">
-                    <section class="tree-section">
-                        <h2 class="tree-header" data-section="entities" role="button" tabindex="0">Entities</h2>
-                        <div class="tree-items" id="entitiesList" role="list"></div>
+                <nav class="sidebar-tabs" id="sidebarTabs">
+                    <!-- Entities Tab (collapsible, sub-levels: System > Container) -->
+                    <section class="sidebar-tab" data-tab="entities">
+                        <div class="tab-header" data-section="entities" role="button" tabindex="0">
+                            <span class="tab-chevron">▼</span>
+                            <span class="tab-title">Entities</span>
+                            <span class="tab-count" id="entitiesCount">0</span>
+                        </div>
+                        <div class="tab-content" id="entitiesList"></div>
                     </section>
                     
-                    <section class="tree-section">
-                        <h2 class="tree-header" data-section="streams" role="button" tabindex="0">Streams</h2>
-                        <div class="tree-items" id="streamsList" role="list"></div>
+                    <!-- Streams Tab (collapsible) -->
+                    <section class="sidebar-tab" data-tab="streams">
+                        <div class="tab-header" data-section="streams" role="button" tabindex="0">
+                            <span class="tab-chevron">▼</span>
+                            <span class="tab-title">Streams</span>
+                            <span class="tab-count" id="streamsCount">0</span>
+                        </div>
+                        <div class="tab-content" id="streamsList"></div>
                     </section>
                     
-                    <section class="tree-section">
-                        <h2 class="tree-header" data-section="tasks" role="button" tabindex="0">Tasks</h2>
-                        <div class="tree-items" id="tasksList" role="list"></div>
+                    <!-- Replays Tab (collapsible) - Phase 11 -->
+                    <section class="sidebar-tab" data-tab="replays">
+                        <div class="tab-header" data-section="replays" role="button" tabindex="0">
+                            <span class="tab-chevron">▼</span>
+                            <span class="tab-title">Replays</span>
+                            <span class="tab-count" id="replaysCount">0</span>
+                        </div>
+                        <div class="tab-content" id="replaysList"></div>
                     </section>
                 </nav>
             </aside>
@@ -131,6 +146,7 @@
             
             <div class="timeline-time">
                 <span class="time-mode" id="timeMode">LIVE</span>
+                <span class="clamp-indicator" id="clampIndicator" style="display:none;">🔒</span>
                 <time class="time-display" id="timeDisplay">00:00:00.000</time>
             </div>
             
@@ -154,6 +170,7 @@
     <script src="/ui/js/entities.js"></script>
     <script src="/ui/js/cards.js"></script>
     <script src="/ui/js/streams.js"></script>
+    <script src="/ui/js/replays.js"></script>
     <script src="/ui/js/chat.js"></script>
     <script src="/ui/js/split-setup.js"></script>
     <script src="/ui/js/init.js"></script>

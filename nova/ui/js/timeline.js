@@ -24,7 +24,10 @@ const timeline = {
     // Time window (1 hour max visible)
     windowStartUs: 0,
     windowEndUs: 0,
-    windowSizeUs: 3600 * 1_000_000  // 1 hour in microseconds
+    windowSizeUs: 3600 * 1_000_000,  // 1 hour in microseconds
+    
+    // Clamp (Phase 11 - UI-only restriction to a run's time window)
+    clamp: null  // {startTimeSec, stopTimeSec, timebase} or null
 };
 
 async function initTimeline() {
@@ -153,6 +156,10 @@ function handleJumpToLive() {
     timeline.rate = 1.0;  // Reset to 1x forward
     // timebase unchanged - maintains role-based default from config
     timeline.currentTimeUs = Date.now() * 1000;
+    
+    // Exit clamp (Phase 11)
+    timeline.clamp = null;
+    if (window.clearClamp) window.clearClamp();
     timeline.windowEndUs = timeline.currentTimeUs;
     timeline.windowStartUs = timeline.currentTimeUs - timeline.windowSizeUs;
     
@@ -281,7 +288,8 @@ function updateDisplay() {
         timeline.windowStartUs = timeline.currentTimeUs - (timeline.windowSizeUs / 2);
     } else if (timeline.mode === 'REWIND' && timeline.isPlaying) {
         // Server-driven cursor: timeline.currentTimeUs is updated by appendEvents from chunk metadata
-        // Client only adjusts window if cursor goes out of bounds (no simulation needed)
+        // Stream already respects clamp bounds (startTime/stopTime in request)
+        // When stream ends (server sends end-of-stream), we pause
         
         // Adjust window if cursor goes out of bounds
         if (timeline.currentTimeUs > timeline.windowEndUs) {
@@ -295,22 +303,19 @@ function updateDisplay() {
         }
     }
     
-    // Update time display
+    // Update time display (UTC)
     const date = new Date(timeline.currentTimeUs / 1000);
-    const hours = String(date.getHours()).padStart(2, '0');
-    const minutes = String(date.getMinutes()).padStart(2, '0');
-    const seconds = String(date.getSeconds()).padStart(2, '0');
+    const hours = String(date.getUTCHours()).padStart(2, '0');
+    const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+    const seconds = String(date.getUTCSeconds()).padStart(2, '0');
     const ms = String(date.getMilliseconds()).padStart(3, '0');
     
     document.getElementById('timeDisplay').textContent = `${hours}:${minutes}:${seconds}.${ms}`;
     
-    // Update date display
-    const dateStr = date.toLocaleDateString('en-US', { 
-        month: 'short', 
-        day: 'numeric', 
-        year: 'numeric' 
-    });
-    document.getElementById('timelineDate').textContent = dateStr;
+    // Update date display (UTC)
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const dateStr = `${months[date.getUTCMonth()]} ${date.getUTCDate()}, ${date.getUTCFullYear()}`;
+    document.getElementById('timelineDate').textContent = `${dateStr} UTC`;
     
     // Update mode indicator
     const modeEl = document.getElementById('timeMode');
@@ -320,6 +325,18 @@ function updateDisplay() {
     } else {
         modeEl.textContent = timeline.isPlaying ? 'REWIND' : 'PAUSED';
         modeEl.classList.toggle('paused', !timeline.isPlaying);
+    }
+    
+    // Update clamp indicator (Phase 11)
+    const clampIndicator = document.getElementById('clampIndicator');
+    if (clampIndicator) {
+        if (timeline.clamp) {
+            clampIndicator.textContent = '🔒';
+            clampIndicator.title = `Clamped: ${formatClampTime(timeline.clamp.startTimeSec)} - ${formatClampTime(timeline.clamp.stopTimeSec)}`;
+            clampIndicator.style.display = 'inline';
+        } else {
+            clampIndicator.style.display = 'none';
+        }
     }
     
     // Disable command buttons in REWIND mode (Phase 5: replay safety)
@@ -379,15 +396,22 @@ function startStream() {
     
     timeline.playbackRequestId = generateUUID();
     
-    // Calculate start/stop times based on mode
+    // Calculate start/stop times based on mode and clamp
     let startTime, stopTime;
     
     if (timeline.mode === 'LIVE') {
-        // LIVE mode: no startTime = server streams from now
+        // LIVE mode: no bounds, server streams from now
         startTime = null;
         stopTime = null;
+    } else if (timeline.clamp) {
+        // REWIND mode with clamp: use full clamp bounds
+        // Server StreamCursor decides where to start based on rate direction:
+        //   rate > 0: starts at startTime, moves toward stopTime
+        //   rate < 0: starts at stopTime, moves toward startTime
+        startTime = timeline.clamp.startTimeSec * 1_000_000;
+        stopTime = timeline.clamp.stopTimeSec * 1_000_000;
     } else {
-        // REWIND mode: start from current cursor position
+        // REWIND mode without clamp: start from cursor, no stop
         startTime = timeline.currentTimeUs;
         stopTime = null;
     }
@@ -404,8 +428,9 @@ function startStream() {
         filters: { lanes: ['metadata', 'ui', 'command'] }  // Server expects filters.lanes
     };
     
-    const startDate = new Date(startTime / 1000);
-    console.log('[Timeline] Starting stream at', startDate.toISOString(), 'rate=', timeline.rate);
+    const startDate = startTime ? new Date(startTime / 1000) : new Date();
+    const stopDate = stopTime ? new Date(stopTime / 1000) : null;
+    console.log('[Timeline] Starting stream:', startDate.toISOString(), '→', stopDate?.toISOString() || 'LIVE', 'rate=', timeline.rate);
     window.sendWebSocketMessage(request);
 }
 
@@ -461,6 +486,18 @@ function generateUUID() {
     });
 }
 
+/**
+ * Format seconds timestamp for clamp display
+ */
+function formatClampTime(sec) {
+    if (!sec) return '—';
+    const date = new Date(sec * 1000);
+    const hh = String(date.getUTCHours()).padStart(2, '0');
+    const mm = String(date.getUTCMinutes()).padStart(2, '0');
+    const ss = String(date.getUTCSeconds()).padStart(2, '0');
+    return `${hh}:${mm}:${ss}`;
+}
+
 // Export for use by other modules
 window.initTimeline = initTimeline;
 window.updateTimelineUI = updateUI;
@@ -470,3 +507,4 @@ window.timeline = timeline;
 window.timeline = timeline;
 window.startStream = startStream;
 window.cancelStream = cancelStream;
+window.cancelAndStartStream = cancelAndStartStream;

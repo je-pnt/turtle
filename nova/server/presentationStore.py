@@ -71,6 +71,14 @@ class PresentationStore:
         self.usersPath.mkdir(parents=True, exist_ok=True)
         self.defaultsPath.mkdir(parents=True, exist_ok=True)
     
+    def _scopeToFilename(self, scopeId: str) -> str:
+        """Convert scopeId to safe filename (| is invalid on Windows)."""
+        return scopeId.replace('|', '_')
+    
+    def _filenameToScope(self, filename: str) -> str:
+        """Convert filename back to scopeId."""
+        return filename.replace('_', '|')
+    
     # =========================================================================
     # User Overrides
     # =========================================================================
@@ -97,6 +105,35 @@ class PresentationStore:
             }
         except (json.JSONDecodeError, IOError) as e:
             self.log.warning(f"[Presentation] Failed to load user overrides: {e}")
+            return {}
+    
+    def getAllUserOverrides(self, username: str) -> Dict[str, Dict[str, EntityPresentation]]:
+        """
+        Get ALL user's presentation overrides across all scopes.
+        
+        Used when user has 'ALL' access to retrieve overrides from all scopes.
+        
+        Returns: Dict of scopeId → { uniqueId → EntityPresentation }
+        """
+        filePath = self.usersPath / username / 'presentation.json'
+        if not filePath.exists():
+            return {}
+        
+        try:
+            with open(filePath, 'r') as f:
+                data = json.load(f)
+            
+            result = {}
+            for scopeId, scopeData in data.items():
+                if isinstance(scopeData, dict):
+                    result[scopeId] = {
+                        uniqueId: EntityPresentation.fromDict(overrides)
+                        for uniqueId, overrides in scopeData.items()
+                        if isinstance(overrides, dict)
+                    }
+            return result
+        except (json.JSONDecodeError, IOError) as e:
+            self.log.warning(f"[Presentation] Failed to load all user overrides: {e}")
             return {}
     
     def setUserOverride(
@@ -220,7 +257,7 @@ class PresentationStore:
         
         Returns: Dict of uniqueId → EntityPresentation
         """
-        filePath = self.defaultsPath / f'{scopeId}.json'
+        filePath = self.defaultsPath / f'{self._scopeToFilename(scopeId)}.json'
         if not filePath.exists():
             return {}
         
@@ -236,6 +273,35 @@ class PresentationStore:
             self.log.warning(f"[Presentation] Failed to load admin defaults: {e}")
             return {}
     
+    def getAllAdminDefaults(self) -> Dict[str, Dict[str, EntityPresentation]]:
+        """
+        Get ALL admin default overrides across all scopes.
+        
+        Used when user has 'ALL' access to retrieve defaults from all scopes.
+        
+        Returns: Dict of scopeId → { uniqueId → EntityPresentation }
+        """
+        result = {}
+        
+        try:
+            # Scan all JSON files in defaults directory
+            for filePath in self.defaultsPath.glob('*.json'):
+                scopeId = self._filenameToScope(filePath.stem)  # Convert filename back to scopeId
+                try:
+                    with open(filePath, 'r') as f:
+                        data = json.load(f)
+                    result[scopeId] = {
+                        uniqueId: EntityPresentation.fromDict(overrides)
+                        for uniqueId, overrides in data.items()
+                        if isinstance(overrides, dict)
+                    }
+                except (json.JSONDecodeError, IOError) as e:
+                    self.log.warning(f"[Presentation] Failed to load admin defaults for {scopeId}: {e}")
+        except Exception as e:
+            self.log.warning(f"[Presentation] Failed to scan admin defaults: {e}")
+        
+        return result
+
     def setAdminDefault(
         self, 
         scopeId: str, 
@@ -266,7 +332,7 @@ class PresentationStore:
                 del filtered['scale']
         
         # Load existing
-        filePath = self.defaultsPath / f'{scopeId}.json'
+        filePath = self.defaultsPath / f'{self._scopeToFilename(scopeId)}.json'
         
         data = {}
         if filePath.exists():
@@ -301,7 +367,7 @@ class PresentationStore:
         key: Optional[str] = None
     ) -> bool:
         """Delete admin default override."""
-        filePath = self.defaultsPath / f'{scopeId}.json'
+        filePath = self.defaultsPath / f'{self._scopeToFilename(scopeId)}.json'
         if not filePath.exists():
             return True
         

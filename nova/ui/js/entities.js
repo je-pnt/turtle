@@ -169,14 +169,16 @@ function renderShields() {
     var html = '';
     
     shields.tree.forEach(function(containers, systemId) {
-        html += '<div class="shield-system">';
-        html += '<div class="system-header"><span class="system-chevron">▼</span>';
+        var sysCollapsed = localStorage.getItem('shield:system:' + systemId + ':collapsed') === 'true';
+        html += '<div class="shield-system' + (sysCollapsed ? ' collapsed' : '') + '" data-system="' + systemId + '">';
+        html += '<div class="system-header" onclick="toggleSystemCollapse(\'' + systemId + '\')"><span class="system-chevron">' + (sysCollapsed ? '▶' : '▼') + '</span>';
         html += '<span class="system-name">' + systemId + '</span></div>';
         html += '<div class="system-children">';
         
         containers.forEach(function(entities, containerId) {
-            html += '<div class="shield-container">';
-            html += '<div class="container-header"><span class="container-chevron">▼</span>';
+            var contCollapsed = localStorage.getItem('shield:container:' + systemId + ':' + containerId + ':collapsed') === 'true';
+            html += '<div class="shield-container' + (contCollapsed ? ' collapsed' : '') + '" data-container="' + containerId + '">';
+            html += '<div class="container-header" onclick="toggleContainerCollapse(\'' + systemId + '\', \'' + containerId + '\')"><span class="container-chevron">' + (contCollapsed ? '▶' : '▼') + '</span>';
             html += '<span class="container-name">' + containerId + '</span></div>';
             html += '<div class="container-children">';
             
@@ -215,9 +217,31 @@ function getSelectedEntity() {
     return shields.byKey.get(shields.selected);
 }
 
+/**
+ * Toggle system collapse state (Phase 11)
+ */
+function toggleSystemCollapse(systemId) {
+    var key = 'shield:system:' + systemId + ':collapsed';
+    var isCollapsed = localStorage.getItem(key) === 'true';
+    localStorage.setItem(key, !isCollapsed);
+    renderShields();
+}
+
+/**
+ * Toggle container collapse state (Phase 11)
+ */
+function toggleContainerCollapse(systemId, containerId) {
+    var key = 'shield:container:' + systemId + ':' + containerId + ':collapsed';
+    var isCollapsed = localStorage.getItem(key) === 'true';
+    localStorage.setItem(key, !isCollapsed);
+    renderShields();
+}
+
 // Exports
 window.initEntities = initEntities;
 window.processEntityEvent = processEntityEvent;
 window.selectEntity = selectEntity;
 window.getSelectedEntity = getSelectedEntity;
+window.toggleSystemCollapse = toggleSystemCollapse;
+window.toggleContainerCollapse = toggleContainerCollapse;
 window.shields = shields;

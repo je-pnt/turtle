@@ -43,10 +43,30 @@
     // Presentation Cache
     // ============================================================================
     
+    // Two caches: user overrides (priority) and admin defaults (fallback)
+    let adminDefaultsCache = new Map();  // scopeId → { uniqueId → presentation }
+    
     async function loadAllPresentations() {
-        // Load presentations from server - no scope needed
-        // Server resolves based on user's effective scopes
+        // Load both user overrides AND admin defaults
+        // User overrides take priority over admin defaults
         try {
+            // Load admin defaults first
+            const defaultsResponse = await fetch('/api/presentation-default', { credentials: 'same-origin' });
+            if (defaultsResponse.ok) {
+                const defaultsData = await defaultsResponse.json();
+                if (defaultsData.defaults) {
+                    for (const [uniqueId, pres] of Object.entries(defaultsData.defaults)) {
+                        const scopeId = pres.scopeId || 'default';
+                        if (!adminDefaultsCache.has(scopeId)) {
+                            adminDefaultsCache.set(scopeId, {});
+                        }
+                        adminDefaultsCache.get(scopeId)[uniqueId] = pres;
+                    }
+                    console.log('[Map] Loaded admin defaults:', Object.keys(defaultsData.defaults).length, 'entities');
+                }
+            }
+            
+            // Then load user overrides (these take priority)
             const response = await fetch('/api/presentation', { credentials: 'same-origin' });
             if (response.ok) {
                 const data = await response.json();
@@ -59,7 +79,7 @@
                         }
                         presentationCache.get(scopeId)[uniqueId] = pres;
                     }
-                    console.log('[Map] Loaded presentations:', Object.keys(data.overrides).length, 'entities');
+                    console.log('[Map] Loaded user overrides:', Object.keys(data.overrides).length, 'entities');
                 }
             }
         } catch (e) {
@@ -68,10 +88,16 @@
     }
     
     function getPresentationForEntity(uniqueId) {
-        // Search all cached scopes for this uniqueId
+        // First check user overrides (priority)
         for (const [scopeId, overrides] of presentationCache) {
             if (overrides[uniqueId]) {
                 return overrides[uniqueId];
+            }
+        }
+        // Then check admin defaults (fallback)
+        for (const [scopeId, defaults] of adminDefaultsCache) {
+            if (defaults[uniqueId]) {
+                return defaults[uniqueId];
             }
         }
         return null;
@@ -423,7 +449,18 @@
     
     function handlePresentationUpdate(msg) {
         // Handle WebSocket presentation update from server
-        const { scopeId, uniqueId, data, deleted, isDefault } = msg;
+        const { scopeId, uniqueId, data, deleted, isDefault, username } = msg;
+        
+        // If this is an admin default update, only apply if user doesn't have their own override
+        if (isDefault && !deleted) {
+            // Check if current user already has an override for this entity
+            const existingUserOverride = presentationCache.get(scopeId)?.[uniqueId];
+            if (existingUserOverride) {
+                // User has their own settings - don't override with admin default
+                console.log('[Map] Ignoring admin default - user has override:', scopeId, uniqueId);
+                return;
+            }
+        }
         
         if (deleted) {
             // Remove from cache
@@ -447,7 +484,7 @@
             }
         }
         
-        console.log('[Map] Presentation update:', scopeId, uniqueId, deleted ? '(deleted)' : '');
+        console.log('[Map] Presentation update:', scopeId, uniqueId, deleted ? '(deleted)' : '', isDefault ? '(admin default)' : '');
     }
 
     // ============================================================================

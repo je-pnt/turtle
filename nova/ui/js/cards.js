@@ -181,6 +181,16 @@ function renderCard(entity, manifest, uiData, isRewind) {
         return renderTcpStreamCard(entity, entityKey, isCollapsed, manifest);
     }
     
+    // Custom card rendering for make-replay
+    if (entity.entityType === 'make-replay') {
+        return renderMakeReplayCard(entity, entityKey, isCollapsed);
+    }
+    
+    // Custom card rendering for individual runs
+    if (entity.entityType === 'run') {
+        return renderRunCard(entity, entityKey, isCollapsed);
+    }
+    
     // Get fresh entity from shields for accurate lastSeen
     const freshEntity = window.shields?.byKey?.get(entityKey) || entity;
     
@@ -1237,44 +1247,67 @@ function editCardName(entityKey) {
         return;
     }
     
-    const currentName = titleEl.textContent;
+    // Get current display name (strip emoji prefix)
+    let currentName = titleEl.textContent;
+    let emojiPrefix = '';
+    const emojiMatch = currentName.match(/^(\S+\s)/);
+    if (emojiMatch && /\p{Emoji}/u.test(emojiMatch[1])) {
+        emojiPrefix = emojiMatch[1];
+        currentName = currentName.substring(emojiPrefix.length);
+    }
+    
     const input = document.createElement('input');
     input.type = 'text';
     input.value = currentName;
     input.className = 'card-title-input';
     input.dataset.entityKey = entityKey;
     
+    // Check if this is a run card
+    const isRunCard = entityKey.startsWith('replay|runs|run-');
+    const runNumberMatch = entityKey.match(/run-(\d+)$/);
+    const runNumber = runNumberMatch ? parseInt(runNumberMatch[1]) : null;
+    
     const saveName = async () => {
         const newName = input.value.trim();
         if (newName && newName !== currentName) {
-            // Save via presentation API - need to split entityKey into scopeId/uniqueId
-            const parts = entityKey.split('|');
-            const scopeId = parts.length === 3 ? `${parts[0]}|${parts[1]}` : 'default';
-            const uniqueId = parts.length === 3 ? parts[2] : entityKey;
-            
-            try {
-                const url = `/api/presentation/${encodeURIComponent(uniqueId)}?scopeId=${encodeURIComponent(scopeId)}`;
-                const response = await fetch(url, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ displayName: newName })
-                });
-                if (response.ok) {
-                    console.log('[Cards] Name saved:', newName);
-                    // Update map entity name
-                    if (window.NovaMap) {
-                        window.NovaMap.updateEntityPresentation(entityKey, { displayName: newName });
-                    }
+            if (isRunCard && runNumber) {
+                // For run cards, use updateRun
+                try {
+                    await updateRun(runNumber, { runName: newName });
+                    console.log('[Cards] Run name saved:', newName);
+                } catch (e) {
+                    console.error('[Cards] Failed to save run name:', e);
                 }
-            } catch (e) {
-                console.error('[Cards] Failed to save name:', e);
+            } else {
+                // Save via presentation API - need to split entityKey into scopeId/uniqueId
+                const parts = entityKey.split('|');
+                const scopeId = parts.length === 3 ? `${parts[0]}|${parts[1]}` : 'default';
+                const uniqueId = parts.length === 3 ? parts[2] : entityKey;
+                
+                try {
+                    const url = `/api/presentation/${encodeURIComponent(uniqueId)}?scopeId=${encodeURIComponent(scopeId)}`;
+                    const response = await fetch(url, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ displayName: newName })
+                    });
+                    if (response.ok) {
+                        console.log('[Cards] Name saved:', newName);
+                        // Update map entity name
+                        if (window.NovaMap) {
+                            window.NovaMap.updateEntityPresentation(entityKey, { displayName: newName });
+                        }
+                    }
+                } catch (e) {
+                    console.error('[Cards] Failed to save name:', e);
+                }
             }
         }
         // Replace input with span
         const span = document.createElement('span');
         span.className = 'card-title';
         span.dataset.entityKey = entityKey;
-        span.textContent = input.value.trim() || currentName;
+        span.textContent = emojiPrefix + (input.value.trim() || currentName);
         input.replaceWith(span);
     };
     
@@ -1291,7 +1324,7 @@ function editCardName(entityKey) {
             const span = document.createElement('span');
             span.className = 'card-title';
             span.dataset.entityKey = entityKey;
-            span.textContent = currentName;
+            span.textContent = emojiPrefix + currentName;
             input.replaceWith(span);
         }
     });
@@ -1300,6 +1333,1019 @@ function editCardName(entityKey) {
     titleEl.replaceWith(input);
     input.focus();
     input.select();
+}
+
+// ============================================================================
+// Run / Replay Cards (Phase 11)
+// ============================================================================
+
+/**
+ * Format seconds (Unix timestamp) to UTC datetime string matching timeline format
+ * Format: YYYY-MM-DD HH:MM:SS UTC
+ */
+function formatDatetimeUTC(sec) {
+    if (!sec) return '';
+    const date = new Date(sec * 1000);
+    const yyyy = date.getUTCFullYear();
+    const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(date.getUTCDate()).padStart(2, '0');
+    const hh = String(date.getUTCHours()).padStart(2, '0');
+    const min = String(date.getUTCMinutes()).padStart(2, '0');
+    const ss = String(date.getUTCSeconds()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd} ${hh}:${min}:${ss}`;
+}
+
+/**
+ * Format seconds (Unix timestamp) to datetime-local input value (UTC)
+ * Note: datetime-local displays in browser's local timezone, but we store/process UTC
+ */
+function formatDatetimeLocal(sec) {
+    if (!sec) return '';
+    const date = new Date(sec * 1000);
+    // Format as UTC for datetime-local input: YYYY-MM-DDTHH:MM:SS
+    const yyyy = date.getUTCFullYear();
+    const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(date.getUTCDate()).padStart(2, '0');
+    const hh = String(date.getUTCHours()).padStart(2, '0');
+    const min = String(date.getUTCMinutes()).padStart(2, '0');
+    const ss = String(date.getUTCSeconds()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}T${hh}:${min}:${ss}`;
+}
+
+/**
+ * Parse datetime-local input value to seconds (Unix timestamp)
+ * Treats input as UTC (matching the format we display)
+ */
+function parseDatetimeLocal(value) {
+    if (!value) return 0;
+    // Input format: YYYY-MM-DDTHH:MM:SS or YYYY-MM-DDTHH:MM
+    // Parse as UTC by adding 'Z' suffix
+    const date = new Date(value + 'Z');
+    return Math.floor(date.getTime() / 1000);
+}
+
+/**
+ * Render "Make Replay" card - entry form to create new runs
+ */
+function renderMakeReplayCard(entity, entityKey, isCollapsed) {
+    const settings = window.replays?.settings || {};
+    const defaultType = settings.defaultRunType || 'generic';
+    const lastRunName = settings.lastRunName || 'Untitled Run';
+    const nextRunNumber = (window.replays?.nextRunNumber || 1);
+    
+    // Get run types from manifests
+    const runTypes = window.getRunTypes ? window.getRunTypes() : [
+        { value: 'generic', label: 'Generic', icon: '🎬' }
+    ];
+    
+    // Default times: use CURRENT WALL-CLOCK time, not timeline cursor
+    // This ensures "now" is actually now, even when timeline is in replay mode
+    const wallClockTimeSec = Math.floor(Date.now() / 1000);
+    const defaultStart = formatDatetimeLocal(wallClockTimeSec);
+    const defaultStop = formatDatetimeLocal(wallClockTimeSec + 3600); // +1 hour
+    
+    // Build run type options from manifests
+    const typeOptions = runTypes.map(t => 
+        `<option value="${t.value}" ${defaultType === t.value ? 'selected' : ''}>${t.icon || ''} ${t.label}</option>`
+    ).join('');
+    
+    return `
+        <div class="entity-card ${isCollapsed ? 'collapsed' : ''}" data-entity-key="${entityKey}" style="--card-color: #9c27b0">
+            <div class="card-header" data-action="toggle-collapse" data-entity-key="${entityKey}">
+                <div class="card-drag-handle" data-action="drag-handle" data-entity-key="${entityKey}">⋮⋮</div>
+                <div class="card-header-main">
+                    <div class="card-title">🎬 Make Replay</div>
+                </div>
+                <div class="card-header-controls">
+                    <span class="collapse-indicator">${isCollapsed ? '▶' : '▼'}</span>
+                    <button type="button" class="card-close" data-action="close-card" data-entity-key="${entityKey}" title="Close">×</button>
+                </div>
+            </div>
+            ${!isCollapsed ? `
+            <div class="card-body">
+                <div class="run-form">
+                    <div class="form-row">
+                        <label>Run #:</label>
+                        <input type="number" id="newRunNumber" class="form-input form-input-small" value="${nextRunNumber}" min="1">
+                    </div>
+                    <div class="form-row">
+                        <label>Name:</label>
+                        <input type="text" id="newRunName" placeholder="Run name" class="form-input" value="${escapeAttr(lastRunName)}">
+                    </div>
+                    <div class="form-row">
+                        <label>Type:</label>
+                        <select id="newRunType" class="form-input">
+                            ${typeOptions}
+                        </select>
+                    </div>
+                    <div class="form-row">
+                        <label>Start Time (UTC):</label>
+                        <input type="datetime-local" id="newRunStart" class="form-input" step="1" value="${defaultStart}">
+                    </div>
+                    <div class="form-row">
+                        <label>Stop Time (UTC):</label>
+                        <input type="datetime-local" id="newRunStop" class="form-input" step="1" value="${defaultStop}">
+                    </div>
+                    <div class="form-row">
+                        <label>Notes:</label>
+                        <textarea id="newRunNotes" class="form-input" rows="2" placeholder="Analyst notes..."></textarea>
+                    </div>
+                    <div class="form-row form-actions">
+                        <button class="card-action primary" onclick="saveNewRun()">💾 Save Replay</button>
+                        <span id="runError" class="form-error"></span>
+                    </div>
+                </div>
+            </div>
+            ` : ''}
+        </div>
+    `;
+}
+
+/**
+ * Render individual run card - shows run details, music on/off times, optional signal toggles
+ */
+function renderRunCard(entity, entityKey, isCollapsed) {
+    const run = entity;  // Entity IS the run
+    const isClamped = window.replays?.clampedRun === run.runNumber;
+    const timebase = run.timebase || 'canonical';
+    
+    // Format times for display
+    const formatTimeDisplay = (sec) => {
+        if (!sec) return '—';
+        const date = new Date(sec * 1000);
+        const mon = date.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' });
+        const day = date.getUTCDate().toString().padStart(2, '0');
+        const hh = date.getUTCHours().toString().padStart(2, '0');
+        const mm = date.getUTCMinutes().toString().padStart(2, '0');
+        const ss = date.getUTCSeconds().toString().padStart(2, '0');
+        return `${mon} ${day} ${hh}:${mm}:${ss}Z`;
+    };
+    
+    const startFormatted = formatTimeDisplay(run.startTimeSec);
+    const stopFormatted = formatTimeDisplay(run.stopTimeSec);
+    const durationSec = (run.stopTimeSec && run.startTimeSec) 
+        ? Math.max(0, run.stopTimeSec - run.startTimeSec)
+        : 0;
+    const durationStr = durationSec > 0 ? formatDuration(durationSec) : '—';
+    
+    return `
+        <div class="entity-card ${isCollapsed ? 'collapsed' : ''}" data-entity-key="${entityKey}" style="--card-color: #9c27b0">
+            <div class="card-header" data-action="toggle-collapse" data-entity-key="${entityKey}">
+                <div class="card-drag-handle" data-action="drag-handle" data-entity-key="${entityKey}">⋮⋮</div>
+                <div class="card-header-main">
+                    <div class="card-title-row">
+                        <span class="card-title" data-entity-key="${entityKey}">🎬 ${escapeHtml(run.runName || 'Run ' + run.runNumber)}</span>
+                    </div>
+                    <div class="card-identity-row">
+                        <span class="card-identity">Run #${run.runNumber} · ${run.runType} · ${timebase}</span>
+                        ${isClamped ? '<span class="run-clamped">🔒 CLAMPED</span>' : ''}
+                    </div>
+                </div>
+                <div class="card-header-controls">
+                    <button type="button" class="card-edit-name-btn" data-action="edit-name" data-entity-key="${entityKey}" title="Edit name">✏️</button>
+                    <span class="collapse-indicator">${isCollapsed ? '▶' : '▼'}</span>
+                    <button type="button" class="card-close" data-action="close-card" data-entity-key="${entityKey}" title="Close">×</button>
+                </div>
+            </div>
+            ${!isCollapsed ? `
+            <div class="card-body">
+                <!-- Time Window Summary (core fields - always present) -->
+                <div class="run-time-summary">
+                    <div class="time-summary-row">
+                        <span class="time-label">Window:</span>
+                        <span class="time-value">${startFormatted} → ${stopFormatted}</span>
+                    </div>
+                    <div class="time-summary-row">
+                        <span class="time-label">Duration:</span>
+                        <span class="time-value">${durationStr}</span>
+                    </div>
+                </div>
+                
+                <!-- Editable Start/Stop Times (core fields - always present) -->
+                <div class="run-time-edit">
+                    <div class="time-edit-row">
+                        <label>Start (UTC):</label>
+                        <input type="datetime-local" step="1" value="${formatDatetimeLocal(run.startTimeSec)}" 
+                               onchange="updateRunStartTime(${run.runNumber}, this.value)" class="form-input">
+                        <button class="btn-small btn-icon" onclick="setRunStartToCursor(${run.runNumber})" title="Set to cursor">⏱️</button>
+                    </div>
+                    <div class="time-edit-row">
+                        <label>Stop (UTC):</label>
+                        <input type="datetime-local" step="1" value="${formatDatetimeLocal(run.stopTimeSec)}"
+                               onchange="updateRunStopTime(${run.runNumber}, this.value)" class="form-input">
+                        <button class="btn-small btn-icon" onclick="setRunStopToCursor(${run.runNumber})" title="Set to cursor">⏱️</button>
+                    </div>
+                </div>
+                
+                <!-- Manifest-defined fields -->
+                ${renderManifestFields(run)}
+                
+                <!-- Analyst Notes (core field - always present) -->
+                <div class="run-field">
+                    <label>Notes:</label>
+                    <textarea id="runNotes-${run.runNumber}" class="form-input" rows="2" placeholder="Analyst notes..." onchange="updateRunNotes(${run.runNumber}, this.value)">${escapeHtml(run.analystNotes || '')}</textarea>
+                </div>
+                
+                <!-- Actions -->
+                <div class="run-actions">
+                    <button class="card-action ${isClamped ? '' : 'primary'}" onclick="${isClamped ? 'clearClamp()' : `clampToRun(${run.runNumber})`}">
+                        ${isClamped ? '🔓 Unclamp' : '🔒 Clamp Timeline'}
+                    </button>
+                    <button class="card-action" onclick="downloadBundle(${run.runNumber})">
+                        📦 Download Bundle
+                    </button>
+                </div>
+                <div class="run-actions danger-zone">
+                    <button class="card-action danger" onclick="deleteRun(${run.runNumber})">🗑️ Delete</button>
+                </div>
+            </div>
+            ` : ''}
+        </div>
+    `;
+}
+
+/**
+ * Format duration in human-readable form
+ */
+function formatDuration(seconds) {
+    if (seconds < 60) return `${seconds}s`;
+    if (seconds < 3600) {
+        const m = Math.floor(seconds / 60);
+        const s = seconds % 60;
+        return s > 0 ? `${m}m ${s}s` : `${m}m`;
+    }
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+/**
+ * Render manifest-defined fields for a run card.
+ * Looks up the run's manifest and renders each field based on its type.
+ */
+function renderManifestFields(run) {
+    const manifest = window.getRunManifest ? window.getRunManifest(run.runType) : null;
+    if (!manifest || !manifest.fields || manifest.fields.length === 0) {
+        return '';
+    }
+    
+    let html = '';
+    for (const field of manifest.fields) {
+        html += renderManifestField(run, field);
+    }
+    return html;
+}
+
+/**
+ * Render a single manifest-defined field
+ */
+function renderManifestField(run, field) {
+    const { fieldId, label, fieldType, config } = field;
+    const value = run[fieldId];
+    
+    switch (fieldType) {
+        case 'string':
+            return `
+                <div class="run-field">
+                    <label>${escapeHtml(label)}:</label>
+                    <input type="text" class="form-input" value="${escapeAttr(value || '')}"
+                           onchange="updateRunField(${run.runNumber}, '${fieldId}', this.value)">
+                </div>
+            `;
+        
+        case 'text':
+            return `
+                <div class="run-field">
+                    <label>${escapeHtml(label)}:</label>
+                    <textarea class="form-input" rows="${config?.rows || 2}"
+                              onchange="updateRunField(${run.runNumber}, '${fieldId}', this.value)">${escapeHtml(value || '')}</textarea>
+                </div>
+            `;
+        
+        case 'number':
+            return `
+                <div class="run-field">
+                    <label>${escapeHtml(label)}:</label>
+                    <input type="number" class="form-input" value="${value || 0}"
+                           onchange="updateRunField(${run.runNumber}, '${fieldId}', parseFloat(this.value))">
+                </div>
+            `;
+        
+        case 'datetime':
+            return `
+                <div class="run-field">
+                    <label>${escapeHtml(label)}:</label>
+                    <input type="datetime-local" step="1" class="form-input" value="${formatDatetimeLocal(value)}"
+                           onchange="updateRunField(${run.runNumber}, '${fieldId}', parseDatetimeLocal(this.value))">
+                </div>
+            `;
+        
+        case 'boolean':
+            return `
+                <div class="run-field run-field-inline">
+                    <label>
+                        <input type="checkbox" ${value ? 'checked' : ''}
+                               onchange="updateRunField(${run.runNumber}, '${fieldId}', this.checked)">
+                        ${escapeHtml(label)}
+                    </label>
+                </div>
+            `;
+        
+        case 'array':
+            return renderArrayField(run, field);
+        
+        case 'signals':
+            return renderSignalsField(run, field);
+        
+        default:
+            return `<div class="run-field"><em>Unknown field type: ${fieldType}</em></div>`;
+    }
+}
+
+/**
+ * Render an array field
+ * 
+ * Supports two modes based on config:
+ * - itemFields: array of objects with sub-fields (collapsible)
+ * - itemType: array of simple values like datetime (inline with button)
+ */
+function renderArrayField(run, field) {
+    const { fieldId, label, config } = field;
+    const items = run[fieldId] || [];
+    const itemFields = config?.itemFields;
+    const itemType = config?.itemType;
+    const addLabel = config?.addLabel || 'Add';
+    const isInline = config?.inline || false;
+    const isCollapsed = config?.defaultCollapsed || false;
+    
+    // Simple value array (inline mode) - e.g., array of datetimes
+    if (itemType && !itemFields) {
+        return renderSimpleArrayField(run, field, items, itemType, label, addLabel, isInline);
+    }
+    
+    // Object array (collapsible mode) - e.g., array of {onSec, offSec}
+    let html = `
+        <div class="array-field-section" data-field="${fieldId}">
+            <div class="section-header collapsible" onclick="toggleArrayFieldCollapse(${run.runNumber}, '${fieldId}')">
+                <span class="collapse-icon" id="${fieldId}Collapse-${run.runNumber}">${isCollapsed ? '▶' : '▼'}</span>
+                <span>${escapeHtml(label)} (${items.length})</span>
+                <button class="btn-small btn-add" onclick="event.stopPropagation(); addArrayFieldItem(${run.runNumber}, '${fieldId}')" title="${addLabel}">+</button>
+            </div>
+            <div class="array-field-content ${isCollapsed ? 'collapsed' : ''}" id="${fieldId}Content-${run.runNumber}">
+    `;
+    
+    if (items.length === 0) {
+        html += `<div class="no-items">No items. Click + to add.</div>`;
+    } else {
+        items.forEach((item, idx) => {
+            html += `<div class="array-field-item" data-idx="${idx}">`;
+            html += `<button class="btn-small btn-remove" onclick="removeArrayFieldItem(${run.runNumber}, '${fieldId}', ${idx})" title="Remove">🗑️</button>`;
+            
+            for (const itemField of (itemFields || [])) {
+                const itemValue = item[itemField.fieldId];
+                if (itemField.fieldType === 'datetime') {
+                    html += `
+                        <div class="item-field-row datetime-row">
+                            <button class="btn-small btn-set-now" onclick="setArrayFieldItemToCursor(${run.runNumber}, '${fieldId}', ${idx}, '${itemField.fieldId}')" title="Set to current time">${escapeHtml(itemField.label)}</button>
+                            <input type="datetime-local" step="1" class="form-input datetime-edit" value="${formatDatetimeLocal(itemValue)}"
+                                   onchange="updateArrayFieldItem(${run.runNumber}, '${fieldId}', ${idx}, '${itemField.fieldId}', parseDatetimeLocal(this.value))">
+                        </div>
+                    `;
+                } else {
+                    html += `
+                        <div class="item-field-row">
+                            <label>${escapeHtml(itemField.label)}:</label>
+                            <input type="text" class="form-input" value="${escapeAttr(itemValue || '')}"
+                                   onchange="updateArrayFieldItem(${run.runNumber}, '${fieldId}', ${idx}, '${itemField.fieldId}', this.value)">
+                        </div>
+                    `;
+                }
+            }
+            html += `</div>`;
+        });
+    }
+    
+    html += `</div></div>`;
+    return html;
+}
+
+/**
+ * Render a simple array field (array of primitive values, not objects)
+ * Used for inline display with button + editable values
+ */
+function renderSimpleArrayField(run, field, items, itemType, label, addLabel, isInline) {
+    const { fieldId } = field;
+    
+    let html = `<div class="simple-array-field ${isInline ? 'inline' : ''}" data-field="${fieldId}">`;
+    html += `<button class="btn-small btn-set-now" onclick="addSimpleArrayItem(${run.runNumber}, '${fieldId}', '${itemType}')" title="${addLabel}">${escapeHtml(label)}</button>`;
+    
+    if (items.length > 0) {
+        html += `<div class="simple-array-items">`;
+        items.forEach((value, idx) => {
+            if (itemType === 'datetime') {
+                html += `
+                    <div class="simple-array-item">
+                        <span class="item-number">${idx + 1}.</span>
+                        <input type="datetime-local" step="1" class="form-input datetime-edit" value="${formatDatetimeLocal(value)}"
+                               onchange="updateSimpleArrayItem(${run.runNumber}, '${fieldId}', ${idx}, parseDatetimeLocal(this.value))">
+                        <button class="btn-small btn-remove-inline" onclick="removeSimpleArrayItem(${run.runNumber}, '${fieldId}', ${idx})" title="Remove">×</button>
+                    </div>
+                `;
+            } else {
+                html += `
+                    <div class="simple-array-item">
+                        <span class="item-number">${idx + 1}.</span>
+                        <input type="text" class="form-input" value="${escapeAttr(value || '')}"
+                               onchange="updateSimpleArrayItem(${run.runNumber}, '${fieldId}', ${idx}, this.value)">
+                        <button class="btn-small btn-remove-inline" onclick="removeSimpleArrayItem(${run.runNumber}, '${fieldId}', ${idx})" title="Remove">×</button>
+                    </div>
+                `;
+            }
+        });
+        html += `</div>`;
+    }
+    
+    html += `</div>`;
+    return html;
+}
+
+/**
+ * Add item to simple array field
+ */
+async function addSimpleArrayItem(runNumber, fieldId, itemType) {
+    const run = window.replays?.runs?.get(runNumber);
+    if (!run) return;
+    
+    const items = [...(run[fieldId] || [])];
+    
+    // Default value based on type
+    let newValue;
+    if (itemType === 'datetime') {
+        newValue = Math.floor(Date.now() / 1000);  // Current time
+    } else {
+        newValue = '';
+    }
+    
+    items.push(newValue);
+    await updateRun(runNumber, { [fieldId]: items });
+    openRunCard(runNumber);
+}
+
+/**
+ * Update item in simple array field
+ */
+async function updateSimpleArrayItem(runNumber, fieldId, idx, value) {
+    const run = window.replays?.runs?.get(runNumber);
+    if (!run) return;
+    
+    const items = [...(run[fieldId] || [])];
+    if (idx >= 0 && idx < items.length) {
+        items[idx] = value;
+        await updateRun(runNumber, { [fieldId]: items });
+    }
+}
+
+/**
+ * Remove item from simple array field
+ */
+async function removeSimpleArrayItem(runNumber, fieldId, idx) {
+    const run = window.replays?.runs?.get(runNumber);
+    if (!run) return;
+    
+    const items = [...(run[fieldId] || [])];
+    if (idx >= 0 && idx < items.length) {
+        items.splice(idx, 1);
+        await updateRun(runNumber, { [fieldId]: items });
+        openRunCard(runNumber);
+    }
+}
+
+/**
+ * Cache for available signals per field.
+ * Populated from run manifest config when rendering signals fields.
+ * Key: fieldId, Value: { constellation: [signals] }
+ */
+const _signalsFieldCache = {};
+
+/**
+ * Render a signals field - expandable/collapsible table with checkboxes
+ * 
+ * Shows all available GNSS signals grouped by constellation.
+ * Signals are stored as { signalId: true/false } in the run's data.
+ * Available signals are read from field.config.availableSignals (from manifest).
+ */
+function renderSignalsField(run, field) {
+    const { fieldId, label, config } = field;
+    const selectedSignals = run[fieldId] || {};
+    const isCollapsed = config?.defaultCollapsed !== false;  // Default to collapsed
+    
+    // Get available signals from manifest config, cache for helper functions
+    const availableSignals = config?.availableSignals || {};
+    _signalsFieldCache[fieldId] = availableSignals;
+    
+    let html = `
+        <div class="signals-field-section">
+            <div class="section-header collapsible" onclick="toggleSignalsFieldCollapse(${run.runNumber}, '${fieldId}')">
+                <span class="collapse-icon" id="${fieldId}Collapse-${run.runNumber}">${isCollapsed ? '▶' : '▼'}</span>
+                <span>${escapeHtml(label)}</span>
+            </div>
+            <div class="signals-field-content ${isCollapsed ? 'collapsed' : ''}" id="${fieldId}Content-${run.runNumber}">
+    `;
+    
+    // Render each constellation as collapsible section with checkboxes
+    for (const [constellation, signals] of Object.entries(availableSignals)) {
+        // Count enabled in this constellation
+        const constSignals = signals.map(sig => `${constellation}-${sig}`);
+        const constEnabled = constSignals.filter(sig => selectedSignals[sig] === true).length;
+        // Always start collapsed - user must click signals header to see constellations
+        const constExpanded = false;
+        
+        html += `
+            <div class="signal-constellation">
+                <div class="const-header collapsible" onclick="toggleConstellationCollapse(this)">
+                    <span class="collapse-icon">${constExpanded ? '▼' : '▶'}</span>
+                    <span class="const-name">${escapeHtml(constellation)}</span>
+                    <label class="const-select-all" onclick="event.stopPropagation()">
+                        <input type="checkbox" 
+                               ${constEnabled === signals.length ? 'checked' : ''} 
+                               ${constEnabled > 0 && constEnabled < signals.length ? 'indeterminate' : ''}
+                               onchange="selectAllConstellation(${run.runNumber}, '${fieldId}', '${constellation}', this.checked)">
+                        <span>All</span>
+                    </label>
+                </div>
+                <div class="signal-grid ${constExpanded ? '' : 'collapsed'}">`;
+        
+        for (const sig of signals) {
+            const sigId = `${constellation}-${sig}`;
+            const isEnabled = selectedSignals[sigId] === true;
+            html += `
+                <label class="signal-toggle ${isEnabled ? 'signal-enabled' : ''}">
+                    <input type="checkbox" ${isEnabled ? 'checked' : ''}
+                           onchange="updateSignalField(${run.runNumber}, '${fieldId}', '${sigId}', this.checked)">
+                    <span class="signal-name">${escapeHtml(sig)}</span>
+                </label>`;
+        }
+        
+        html += `</div></div>`;
+    }
+    
+    html += `</div></div>`;
+    return html;
+}
+
+/**
+ * Toggle collapse of a constellation section within signals field
+ */
+function toggleConstellationCollapse(headerEl) {
+    const icon = headerEl.querySelector('.collapse-icon');
+    const grid = headerEl.nextElementSibling;
+    if (grid && grid.classList.contains('signal-grid')) {
+        const isCollapsed = grid.classList.toggle('collapsed');
+        icon.textContent = isCollapsed ? '▶' : '▼';
+    }
+}
+
+/**
+ * Select/deselect all signals in a constellation
+ */
+async function selectAllConstellation(runNumber, fieldId, constellation, checked) {
+    const run = window.replays?.runs?.get(runNumber);
+    if (!run) return;
+    
+    const signals = { ...(run[fieldId] || {}) };
+    const availableSignals = _signalsFieldCache[fieldId] || {};
+    const constSignals = availableSignals[constellation] || [];
+    
+    for (const sig of constSignals) {
+        const sigId = `${constellation}-${sig}`;
+        signals[sigId] = checked;
+    }
+    
+    await updateRun(runNumber, { [fieldId]: signals });
+    openRunCard(runNumber);  // Refresh to update UI
+}
+
+/**
+ * Add a signal to a run's signals field
+ */
+async function addSignalToRun(runNumber, fieldId, signalId) {
+    signalId = signalId?.trim();
+    if (!signalId) return;
+    
+    const run = window.replays?.runs?.get(runNumber);
+    if (!run) return;
+    
+    const signals = { ...(run[fieldId] || {}), [signalId]: true };
+    await updateRun(runNumber, { [fieldId]: signals });
+    
+    // Clear input and refresh card
+    const input = document.getElementById(`newSignal-${runNumber}`);
+    if (input) input.value = '';
+    openRunCard(runNumber);
+}
+
+/**
+ * Render music on/off times section (multiple entries supported)
+ * DEPRECATED: Use renderArrayField with manifest instead
+ */
+function renderMusicTimesSection(run) {
+    const musicTimes = run.musicTimes || [];
+    
+    let html = `
+        <div class="music-times-section">
+            <div class="section-header collapsible" onclick="toggleMusicTimesCollapse(${run.runNumber})">
+                <span class="collapse-icon" id="musicCollapse-${run.runNumber}">▼</span>
+                <span>Music Times (${musicTimes.length})</span>
+                <button class="btn-small btn-add" onclick="event.stopPropagation(); addMusicTime(${run.runNumber})" title="Add music time">+</button>
+            </div>
+            <div class="music-times-content" id="musicContent-${run.runNumber}">
+    `;
+    
+    if (musicTimes.length === 0) {
+        html += `<div class="no-music-times">No music times defined. Click + to add.</div>`;
+    } else {
+        musicTimes.forEach((entry, idx) => {
+            html += `
+                <div class="music-time-entry" data-run="${run.runNumber}" data-idx="${idx}">
+                    <div class="music-time-row">
+                        <label>Music On:</label>
+                        <input type="datetime-local" step="1" value="${formatDatetimeLocal(entry.onSec)}"
+                               onchange="updateMusicTime(${run.runNumber}, ${idx}, 'onSec', this.value)" class="form-input">
+                        <button class="btn-small btn-icon" onclick="setMusicOnToCursor(${run.runNumber}, ${idx})" title="Set to cursor">⏱️</button>
+                    </div>
+                    <div class="music-time-row">
+                        <label>Music Off:</label>
+                        <input type="datetime-local" step="1" value="${formatDatetimeLocal(entry.offSec)}"
+                               onchange="updateMusicTime(${run.runNumber}, ${idx}, 'offSec', this.value)" class="form-input">
+                        <button class="btn-small btn-icon" onclick="setMusicOffToCursor(${run.runNumber}, ${idx})" title="Set to cursor">⏱️</button>
+                    </div>
+                    <button class="btn-small btn-remove" onclick="removeMusicTime(${run.runNumber}, ${idx})" title="Remove">🗑️</button>
+                </div>
+            `;
+        });
+    }
+    
+    html += `</div></div>`;
+    return html;
+}
+
+/**
+ * Render signal toggles for hardwareService runs (collapsible, organized by constellation)
+ */
+function renderSignalToggles(run) {
+    const signals = window.getSignalsByConstellation ? window.getSignalsByConstellation() : {};
+    const runSignals = run.hardwareService?.signals || {};
+    
+    if (Object.keys(signals).length === 0) {
+        return '<div class="no-signals">No signals configured</div>';
+    }
+    
+    // Count enabled signals
+    const enabledCount = Object.values(runSignals).filter(v => v === true).length;
+    const totalCount = Object.values(signals).reduce((sum, arr) => sum + arr.length, 0);
+    
+    let html = `
+        <div class="signal-toggles-section">
+            <div class="section-header collapsible" onclick="toggleSignalTogglesCollapse(${run.runNumber})">
+                <span class="collapse-icon" id="signalCollapse-${run.runNumber}">▶</span>
+                <span>Signals (${enabledCount}/${totalCount})</span>
+            </div>
+            <div class="signal-toggles-content collapsed" id="signalContent-${run.runNumber}">
+    `;
+    
+    for (const [constellation, signalList] of Object.entries(signals)) {
+        html += `<div class="signal-constellation">`;
+        html += `<div class="const-name">${constellation}</div>`;
+        html += `<div class="signal-grid">`;
+        for (const signalId of signalList) {
+            const isEnabled = runSignals[signalId] === true;
+            html += `
+                <label class="signal-toggle">
+                    <input type="checkbox" ${isEnabled ? 'checked' : ''} onchange="toggleRunSignal(${run.runNumber}, '${signalId}', this.checked)">
+                    <span class="signal-name">${signalId}</span>
+                </label>
+            `;
+        }
+        html += `</div></div>`;
+    }
+    
+    html += '</div></div>';
+    return html;
+}
+
+/**
+ * Toggle music times section collapse
+ */
+function toggleMusicTimesCollapse(runNumber) {
+    const content = document.getElementById(`musicContent-${runNumber}`);
+    const icon = document.getElementById(`musicCollapse-${runNumber}`);
+    if (content && icon) {
+        content.classList.toggle('collapsed');
+        icon.textContent = content.classList.contains('collapsed') ? '▶' : '▼';
+    }
+}
+
+/**
+ * Toggle signal toggles section collapse
+ */
+function toggleSignalTogglesCollapse(runNumber) {
+    const content = document.getElementById(`signalContent-${runNumber}`);
+    const icon = document.getElementById(`signalCollapse-${runNumber}`);
+    if (content && icon) {
+        content.classList.toggle('collapsed');
+        icon.textContent = content.classList.contains('collapsed') ? '▶' : '▼';
+    }
+}
+
+/**
+ * Save new run from Make Replay form
+ */
+function saveNewRun() {
+    const numberEl = document.getElementById('newRunNumber');
+    const nameEl = document.getElementById('newRunName');
+    const typeEl = document.getElementById('newRunType');
+    const startEl = document.getElementById('newRunStart');
+    const stopEl = document.getElementById('newRunStop');
+    const notesEl = document.getElementById('newRunNotes');
+    
+    const runNumber = parseInt(numberEl?.value) || undefined;
+    const runName = nameEl?.value?.trim() || 'Untitled Run';
+    const runType = typeEl?.value || 'generic';
+    const startTimeSec = parseDatetimeLocal(startEl?.value);
+    const stopTimeSec = parseDatetimeLocal(stopEl?.value);
+    const analystNotes = notesEl?.value?.trim() || '';
+    
+    // Validate
+    if (!startTimeSec || !stopTimeSec) {
+        showRunError('Start and stop times are required');
+        return;
+    }
+    if (stopTimeSec <= startTimeSec) {
+        showRunError('Stop time must be after start time');
+        return;
+    }
+    
+    // Call createRun with all fields
+    createRunFull({
+        runNumber,
+        runName,
+        runType,
+        startTimeSec,
+        stopTimeSec,
+        analystNotes
+    });
+}
+
+/**
+ * Show run error
+ */
+function showRunError(msg) {
+    const errorEl = document.getElementById('runError');
+    if (errorEl) errorEl.textContent = msg;
+}
+
+/**
+ * Update run start time from datetime input
+ */
+function updateRunStartTime(runNumber, value) {
+    const sec = parseDatetimeLocal(value);
+    if (sec > 0) {
+        updateRun(runNumber, { startTimeSec: sec });
+    }
+}
+
+/**
+ * Update run stop time from datetime input
+ */
+function updateRunStopTime(runNumber, value) {
+    const sec = parseDatetimeLocal(value);
+    if (sec > 0) {
+        updateRun(runNumber, { stopTimeSec: sec });
+    }
+}
+
+/**
+ * Set run start time to current cursor
+ */
+function setRunStartToCursor(runNumber) {
+    setRunStartTime(runNumber);
+}
+
+/**
+ * Set run stop time to current cursor
+ */
+function setRunStopToCursor(runNumber) {
+    setRunStopTime(runNumber);
+}
+
+/**
+ * Add a new music time entry
+ */
+async function addMusicTime(runNumber) {
+    const run = window.replays?.runs?.get(runNumber);
+    if (!run) return;
+    
+    const cursorTimeSec = Math.floor((window.timeline?.currentTimeUs || Date.now() * 1000) / 1_000_000);
+    const musicTimes = [...(run.musicTimes || []), { onSec: cursorTimeSec, offSec: cursorTimeSec + 60 }];
+    
+    await updateRun(runNumber, { musicTimes });
+    openRunCard(runNumber);
+}
+
+/**
+ * Update a music time entry field
+ */
+async function updateMusicTime(runNumber, idx, field, value) {
+    const run = window.replays?.runs?.get(runNumber);
+    if (!run) return;
+    
+    const musicTimes = [...(run.musicTimes || [])];
+    if (idx >= 0 && idx < musicTimes.length) {
+        musicTimes[idx] = { ...musicTimes[idx], [field]: parseDatetimeLocal(value) };
+        await updateRun(runNumber, { musicTimes });
+    }
+}
+
+/**
+ * Remove a music time entry
+ */
+async function removeMusicTime(runNumber, idx) {
+    const run = window.replays?.runs?.get(runNumber);
+    if (!run) return;
+    
+    const musicTimes = [...(run.musicTimes || [])];
+    if (idx >= 0 && idx < musicTimes.length) {
+        musicTimes.splice(idx, 1);
+        await updateRun(runNumber, { musicTimes });
+        openRunCard(runNumber);
+    }
+}
+
+/**
+ * Set music on time to cursor
+ */
+async function setMusicOnToCursor(runNumber, idx) {
+    const run = window.replays?.runs?.get(runNumber);
+    if (!run) return;
+    
+    const cursorTimeSec = Math.floor((window.timeline?.currentTimeUs || Date.now() * 1000) / 1_000_000);
+    const musicTimes = [...(run.musicTimes || [])];
+    if (idx >= 0 && idx < musicTimes.length) {
+        musicTimes[idx] = { ...musicTimes[idx], onSec: cursorTimeSec };
+        await updateRun(runNumber, { musicTimes });
+        openRunCard(runNumber);
+    }
+}
+
+/**
+ * Set music off time to cursor
+ */
+async function setMusicOffToCursor(runNumber, idx) {
+    const run = window.replays?.runs?.get(runNumber);
+    if (!run) return;
+    
+    const cursorTimeSec = Math.floor((window.timeline?.currentTimeUs || Date.now() * 1000) / 1_000_000);
+    const musicTimes = [...(run.musicTimes || [])];
+    if (idx >= 0 && idx < musicTimes.length) {
+        musicTimes[idx] = { ...musicTimes[idx], offSec: cursorTimeSec };
+        await updateRun(runNumber, { musicTimes });
+        openRunCard(runNumber);
+    }
+}
+
+/**
+ * Update run name (triggered by card name editing)
+ */
+function updateRunName(runNumber, newName) {
+    updateRun(runNumber, { runName: newName.trim() });
+}
+
+/**
+ * Update run notes
+ */
+function updateRunNotes(runNumber, newNotes) {
+    updateRun(runNumber, { analystNotes: newNotes });
+}
+
+/**
+ * Update a manifest-defined field on a run
+ */
+async function updateRunField(runNumber, fieldId, value) {
+    await updateRun(runNumber, { [fieldId]: value });
+}
+
+/**
+ * Toggle array field section collapse
+ */
+function toggleArrayFieldCollapse(runNumber, fieldId) {
+    const content = document.getElementById(`${fieldId}Content-${runNumber}`);
+    const icon = document.getElementById(`${fieldId}Collapse-${runNumber}`);
+    if (content && icon) {
+        content.classList.toggle('collapsed');
+        icon.textContent = content.classList.contains('collapsed') ? '▶' : '▼';
+    }
+}
+
+/**
+ * Toggle signals field section collapse
+ */
+function toggleSignalsFieldCollapse(runNumber, fieldId) {
+    toggleArrayFieldCollapse(runNumber, fieldId);
+}
+
+/**
+ * Add item to an array field
+ */
+async function addArrayFieldItem(runNumber, fieldId) {
+    const run = window.replays?.runs?.get(runNumber);
+    if (!run) return;
+    
+    // Get the manifest to find default item structure
+    const manifest = window.getRunManifest ? window.getRunManifest(run.runType) : null;
+    const field = manifest?.fields?.find(f => f.fieldId === fieldId);
+    const itemFields = field?.config?.itemFields || [];
+    
+    // Build default item based on item fields
+    const cursorTimeSec = Math.floor((window.timeline?.currentTimeUs || Date.now() * 1000) / 1_000_000);
+    const newItem = {};
+    for (const itemField of itemFields) {
+        if (itemField.fieldType === 'datetime') {
+            newItem[itemField.fieldId] = cursorTimeSec;
+        } else {
+            newItem[itemField.fieldId] = itemField.default || '';
+        }
+    }
+    
+    const items = [...(run[fieldId] || []), newItem];
+    await updateRun(runNumber, { [fieldId]: items });
+    openRunCard(runNumber);
+}
+
+/**
+ * Remove item from an array field
+ */
+async function removeArrayFieldItem(runNumber, fieldId, idx) {
+    const run = window.replays?.runs?.get(runNumber);
+    if (!run) return;
+    
+    const items = [...(run[fieldId] || [])];
+    if (idx >= 0 && idx < items.length) {
+        items.splice(idx, 1);
+        await updateRun(runNumber, { [fieldId]: items });
+        openRunCard(runNumber);
+    }
+}
+
+/**
+ * Update a field in an array item
+ */
+async function updateArrayFieldItem(runNumber, fieldId, idx, itemFieldId, value) {
+    const run = window.replays?.runs?.get(runNumber);
+    if (!run) return;
+    
+    const items = [...(run[fieldId] || [])];
+    if (idx >= 0 && idx < items.length) {
+        items[idx] = { ...items[idx], [itemFieldId]: value };
+        await updateRun(runNumber, { [fieldId]: items });
+    }
+}
+
+/**
+ * Set an array field item's datetime field to current cursor time
+ */
+async function setArrayFieldItemToCursor(runNumber, fieldId, idx, itemFieldId) {
+    const cursorTimeSec = Math.floor((window.timeline?.currentTimeUs || Date.now() * 1000) / 1_000_000);
+    await updateArrayFieldItem(runNumber, fieldId, idx, itemFieldId, cursorTimeSec);
+    openRunCard(runNumber);
+}
+
+/**
+ * Update a signal in the signals field
+ */
+async function updateSignalField(runNumber, fieldId, signalId, enabled) {
+    const run = window.replays?.runs?.get(runNumber);
+    if (!run) return;
+    
+    const signals = { ...(run[fieldId] || {}), [signalId]: enabled };
+    await updateRun(runNumber, { [fieldId]: signals });
+}
+
+/**
+ * Escape HTML attribute values
+ */
+function escapeAttr(text) {
+    if (!text) return '';
+    return String(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/**
+ * Escape HTML content
+ */
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
 // ============================================================================
@@ -1320,4 +2366,38 @@ window.getStreamEndpointDisplay = getStreamEndpointDisplay;
 window.openPresentation = openPresentation;
 window.editCardName = editCardName;
 window.getProtocolIcon = getProtocolIcon;
+// Run/Replay card functions
+window.saveNewRun = saveNewRun;
+window.updateRunName = updateRunName;
+window.updateRunNotes = updateRunNotes;
+window.updateRunField = updateRunField;
+window.updateRunStartTime = updateRunStartTime;
+window.updateRunStopTime = updateRunStopTime;
+window.setRunStartToCursor = setRunStartToCursor;
+window.setRunStopToCursor = setRunStopToCursor;
+// Array field functions (manifest-driven)
+window.toggleArrayFieldCollapse = toggleArrayFieldCollapse;
+window.toggleSignalsFieldCollapse = toggleSignalsFieldCollapse;
+window.addArrayFieldItem = addArrayFieldItem;
+window.removeArrayFieldItem = removeArrayFieldItem;
+window.updateArrayFieldItem = updateArrayFieldItem;
+window.setArrayFieldItemToCursor = setArrayFieldItemToCursor;
+// Simple array field functions (for itemType arrays)
+window.addSimpleArrayItem = addSimpleArrayItem;
+window.updateSimpleArrayItem = updateSimpleArrayItem;
+window.removeSimpleArrayItem = removeSimpleArrayItem;
+// Signal field functions
+window.updateSignalField = updateSignalField;
+window.addSignalToRun = addSignalToRun;
+window.toggleConstellationCollapse = toggleConstellationCollapse;
+window.selectAllConstellation = selectAllConstellation;
+// Legacy music time functions (backward compat)
+window.addMusicTime = addMusicTime;
+window.updateMusicTime = updateMusicTime;
+window.removeMusicTime = removeMusicTime;
+window.setMusicOnToCursor = setMusicOnToCursor;
+window.setMusicOffToCursor = setMusicOffToCursor;
+window.toggleMusicTimesCollapse = toggleMusicTimesCollapse;
+window.toggleSignalTogglesCollapse = toggleSignalTogglesCollapse;
+window.showRunError = showRunError;
 window.cards = cards;

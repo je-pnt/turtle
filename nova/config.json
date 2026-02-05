@@ -34,7 +34,6 @@
     "defaultMode": "live",
     "maxDisplayEvents": 1000,
     "checkpointIntervalSeconds": 500,
-    "historyTimeoutSeconds": 120,
-    "updateMaxHz": 5.0
+    "historyTimeoutSeconds": 120
   }
 }

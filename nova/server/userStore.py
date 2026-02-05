@@ -105,8 +105,8 @@ class UserStore:
         # Hash password with bcrypt
         passwordHash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
         
-        # Admin gets ALL scopes, operators start with none (must be assigned)
-        defaultScopes = ['ALL'] if role == 'admin' else []
+        # Default all users to ALL scopes until admin assigns specific scopes
+        defaultScopes = ['ALL']
         
         user = {
             'userId': userId,

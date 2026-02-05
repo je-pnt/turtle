@@ -28,8 +28,10 @@ from nova.server.ipc import ServerIPCClient
 from nova.server.streamStore import StreamStore, StreamDefinition
 from nova.server.streams import StreamManager
 from nova.server.presentationStore import PresentationStore
+from nova.server.runStore import RunStore
 from nova.core.contracts import TimelineMode
 from nova.core.manifests.cards import getAllCardManifestsDict
+from nova.core.manifests.runs import getRunManifestRegistry
 from sdk.logging import getLogger
 
 
@@ -117,6 +119,9 @@ class NovaServer:
         # Presentation store (Phase 10: per-user overrides + admin defaults)
         self.presentationStore = PresentationStore()
         
+        # Run store (Phase 11: per-user runs/replays)
+        self.runStore = RunStore()
+        
         # aiohttp app
         self.app = web.Application()
         self._setupRoutes()
@@ -170,6 +175,16 @@ class NovaServer:
         # Admin scope management
         self.app.router.add_get('/api/admin/scopes', self.handleListScopes)
         self.app.router.add_put('/api/admin/users/{userId}/scopes', self.handleSetUserScopes)
+        
+        # Run API endpoints (Phase 11: per-user runs/replays)
+        self.app.router.add_get('/api/runs', self.handleListRuns)
+        self.app.router.add_post('/api/runs', self.handleCreateRun)
+        self.app.router.add_get('/api/runs/{runNumber}', self.handleGetRun)
+        self.app.router.add_put('/api/runs/{runNumber}', self.handleUpdateRun)
+        self.app.router.add_delete('/api/runs/{runNumber}', self.handleDeleteRun)
+        self.app.router.add_post('/api/runs/{runNumber}/bundle', self.handleCreateBundle)
+        self.app.router.add_get('/api/runs/settings', self.handleGetRunSettings)
+        self.app.router.add_put('/api/runs/settings', self.handleSetRunSettings)
         
         # Export download endpoint
         self.app.router.add_get('/exports/{exportId}.zip', self.handleExportDownload)
@@ -254,13 +269,17 @@ class NovaServer:
         nodeMode = self.config.get('mode', 'payload')
         defaultTimebase = 'source' if nodeMode == 'payload' else 'canonical'
         
+        # Get run manifest registry
+        runManifestRegistry = getRunManifestRegistry()
+        
         uiConfig = {
             'mode': nodeMode,
             'defaultTimebase': defaultTimebase,
             'defaultRate': self.config.get('ui', {}).get('defaultRate', 1.0),
             'defaultMode': self.config.get('ui', {}).get('defaultMode', 'live'),
             'authEnabled': self.authManager.enabled,
-            'cardManifests': getAllCardManifestsDict()
+            'cardManifests': getAllCardManifestsDict(),
+            'runManifests': runManifestRegistry.toConfigDict()
         }
         
         return web.json_response(uiConfig)
@@ -1303,6 +1322,7 @@ class NovaServer:
         If single effective scope: returns that scope's data
         If multi scope + no scopeId: aggregates all (each item includes scopeId)
         If multi scope + scopeId: returns that scope's data
+        If user has 'ALL' access: returns all overrides across all scopes
         """
         user = self._getAuthUser(request)
         if not user:
@@ -1313,7 +1333,7 @@ class NovaServer:
             return error
         
         if scopeId:
-            # Single scope
+            # Single scope requested
             overrides = self.presentationStore.getUserOverrides(user['username'], scopeId)
             result = {
                 uniqueId: {**pres.toDict(), 'scopeId': scopeId}
@@ -1324,10 +1344,19 @@ class NovaServer:
             # Multi-scope aggregation
             effectiveScopes = self._getEffectiveScopes(user)
             result = {}
-            for scope in effectiveScopes:
-                overrides = self.presentationStore.getUserOverrides(user['username'], scope)
-                for uniqueId, pres in overrides.items():
-                    result[uniqueId] = {**pres.toDict(), 'scopeId': scope}
+            
+            # Check if user has 'ALL' access - load all scopes
+            if 'ALL' in effectiveScopes:
+                allOverrides = self.presentationStore.getAllUserOverrides(user['username'])
+                for scope, overrides in allOverrides.items():
+                    for uniqueId, pres in overrides.items():
+                        result[uniqueId] = {**pres.toDict(), 'scopeId': scope}
+            else:
+                for scope in effectiveScopes:
+                    overrides = self.presentationStore.getUserOverrides(user['username'], scope)
+                    for uniqueId, pres in overrides.items():
+                        result[uniqueId] = {**pres.toDict(), 'scopeId': scope}
+            
             return web.json_response({'overrides': result})
     
     async def handleSetPresentation(self, request: web.Request) -> web.Response:
@@ -1340,6 +1369,11 @@ class NovaServer:
         user = self._getAuthUser(request)
         if not user:
             return web.json_response({'error': 'Unauthorized'}, status=401)
+        
+        # Debug logging
+        requestedScope = request.query.get('scopeId')
+        effectiveScopes = self._getEffectiveScopes(user)
+        self.log.info(f"[Presentation] SET user={user.get('username')} requestedScope={requestedScope} effectiveScopes={effectiveScopes}")
         
         scopeId, error = self._resolveRequestScope(request, user, requireForWrite=True)
         if error:
@@ -1404,6 +1438,8 @@ class NovaServer:
         
         Query params:
         - scopeId: optional, filter to specific scope
+        
+        If user has 'ALL' access and no scopeId: returns all defaults across all scopes
         """
         user = self._getAuthUser(request)
         if not user:
@@ -1414,7 +1450,7 @@ class NovaServer:
             return error
         
         if scopeId:
-            # Single scope
+            # Single scope requested
             defaults = self.presentationStore.getAdminDefaults(scopeId)
             result = {
                 uniqueId: {**pres.toDict(), 'scopeId': scopeId}
@@ -1425,10 +1461,19 @@ class NovaServer:
             # Multi-scope aggregation
             effectiveScopes = self._getEffectiveScopes(user)
             result = {}
-            for scope in effectiveScopes:
-                defaults = self.presentationStore.getAdminDefaults(scope)
-                for uniqueId, pres in defaults.items():
-                    result[uniqueId] = {**pres.toDict(), 'scopeId': scope}
+            
+            # Check if user has 'ALL' access - load all admin defaults
+            if 'ALL' in effectiveScopes:
+                allDefaults = self.presentationStore.getAllAdminDefaults()
+                for scope, defaults in allDefaults.items():
+                    for uniqueId, pres in defaults.items():
+                        result[uniqueId] = {**pres.toDict(), 'scopeId': scope}
+            else:
+                for scope in effectiveScopes:
+                    defaults = self.presentationStore.getAdminDefaults(scope)
+                    for uniqueId, pres in defaults.items():
+                        result[uniqueId] = {**pres.toDict(), 'scopeId': scope}
+            
             return web.json_response({'defaults': result})
     
     async def handleSetPresentationDefaults(self, request: web.Request) -> web.Response:
@@ -1540,6 +1585,263 @@ class NovaServer:
         else:
             return web.json_response({'error': 'User not found'}, status=404)
     
+    # =========================================================================
+    # Run API Handlers (Phase 11: per-user runs/replays)
+    # =========================================================================
+    
+    async def handleListRuns(self, request: web.Request) -> web.Response:
+        """
+        List all runs for current user.
+        
+        GET /api/runs → list summary
+        """
+        user = self._getAuthUser(request)
+        if not user:
+            return web.json_response({'error': 'Unauthorized'}, status=401)
+        
+        username = user.get('username')
+        runs = self.runStore.listRuns(username)
+        
+        return web.json_response({'runs': runs})
+    
+    async def handleCreateRun(self, request: web.Request) -> web.Response:
+        """
+        Create a new run.
+        
+        POST /api/runs → create run (server assigns runNumber if not provided)
+        
+        Body: any run data (core fields + manifest-defined fields)
+        Server sets timebase based on node mode.
+        """
+        user = self._getAuthUser(request)
+        if not user:
+            return web.json_response({'error': 'Unauthorized'}, status=401)
+        
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({'error': 'Invalid JSON'}, status=400)
+        
+        username = user.get('username')
+        
+        # Server sets timebase (from config, based on node mode)
+        nodeMode = self.config.get('mode', 'payload')
+        data['timebase'] = 'source' if nodeMode == 'payload' else 'canonical'
+        
+        run = self.runStore.createRun(username=username, runData=data)
+        
+        return web.json_response({'run': run.toDict()}, status=201)
+    
+    async def handleGetRun(self, request: web.Request) -> web.Response:
+        """
+        Get a specific run.
+        
+        GET /api/runs/{runNumber}
+        """
+        user = self._getAuthUser(request)
+        if not user:
+            return web.json_response({'error': 'Unauthorized'}, status=401)
+        
+        username = user.get('username')
+        
+        try:
+            runNumber = int(request.match_info['runNumber'])
+        except ValueError:
+            return web.json_response({'error': 'Invalid runNumber'}, status=400)
+        
+        run = self.runStore.getRun(username, runNumber)
+        if not run:
+            return web.json_response({'error': 'Run not found'}, status=404)
+        
+        return web.json_response({'run': run.toDict()})
+    
+    async def handleUpdateRun(self, request: web.Request) -> web.Response:
+        """
+        Update a run (overwrite run.json).
+        
+        PUT /api/runs/{runNumber} → overwrite run.json (last write wins)
+        
+        If runName changes, folder is renamed.
+        """
+        user = self._getAuthUser(request)
+        if not user:
+            return web.json_response({'error': 'Unauthorized'}, status=401)
+        
+        username = user.get('username')
+        
+        try:
+            runNumber = int(request.match_info['runNumber'])
+        except ValueError:
+            return web.json_response({'error': 'Invalid runNumber'}, status=400)
+        
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({'error': 'Invalid JSON'}, status=400)
+        
+        # Client cannot change timebase in Phase 11
+        if 'timebase' in data:
+            del data['timebase']
+        
+        run = self.runStore.updateRun(username, runNumber, data)
+        if not run:
+            return web.json_response({'error': 'Run not found or validation failed'}, status=404)
+        
+        return web.json_response({'run': run.toDict()})
+    
+    async def handleDeleteRun(self, request: web.Request) -> web.Response:
+        """
+        Delete a run folder.
+        
+        DELETE /api/runs/{runNumber}
+        """
+        user = self._getAuthUser(request)
+        if not user:
+            return web.json_response({'error': 'Unauthorized'}, status=401)
+        
+        username = user.get('username')
+        
+        try:
+            runNumber = int(request.match_info['runNumber'])
+        except ValueError:
+            return web.json_response({'error': 'Invalid runNumber'}, status=400)
+        
+        success = self.runStore.deleteRun(username, runNumber)
+        if not success:
+            return web.json_response({'error': 'Run not found'}, status=404)
+        
+        return web.json_response({'status': 'ok'})
+    
+    async def handleCreateBundle(self, request: web.Request) -> web.Response:
+        """
+        Generate and return bundle.zip for a run.
+        
+        POST /api/runs/{runNumber}/bundle → regenerate bundle.zip and return it
+        
+        Always regenerates (never reuses existing zip).
+        Uses Phase 6 driver export pipeline for [startTime, stopTime] in run's timebase.
+        """
+        user = self._getAuthUser(request)
+        if not user:
+            return web.json_response({'error': 'Unauthorized'}, status=401)
+        
+        username = user.get('username')
+        
+        try:
+            runNumber = int(request.match_info['runNumber'])
+        except ValueError:
+            return web.json_response({'error': 'Invalid runNumber'}, status=400)
+        
+        # Get run
+        run = self.runStore.getRun(username, runNumber)
+        if not run:
+            return web.json_response({'error': 'Run not found'}, status=404)
+        
+        # Validate times
+        if not run.startTimeSec or not run.stopTimeSec:
+            return web.json_response({'error': 'Run must have start and stop times'}, status=400)
+        
+        if run.stopTimeSec <= run.startTimeSec:
+            return web.json_response({'error': 'Stop time must be after start time'}, status=400)
+        
+        # Get bundle path
+        bundlePath = self.runStore.setBundlePath(username, runNumber)
+        if not bundlePath:
+            return web.json_response({'error': 'Failed to get bundle path'}, status=500)
+        
+        # Convert seconds to microseconds for Core IPC
+        startTimeUs = int(run.startTimeSec * 1_000_000)
+        stopTimeUs = int(run.stopTimeSec * 1_000_000)
+        
+        try:
+            # Use the existing export method on ipcClient
+            response = await self.ipcClient.export(
+                clientConnId=f"bundle-{username}-{runNumber}",
+                startTime=startTimeUs,
+                stopTime=stopTimeUs,
+                timebase=run.timebase,
+                filters=None
+            )
+            
+            if response.get('error'):
+                return web.json_response({'error': response['error']}, status=500)
+            
+            # The export creates a zip in exports/ directory
+            exportId = response.get('exportId')
+            if not exportId:
+                return web.json_response({'error': 'Export failed - no exportId'}, status=500)
+            
+            # Copy the export zip to the run's bundle.zip
+            exportZipPath = Path(f"./nova/exports/{exportId}.zip")
+            
+            import shutil
+            import zipfile
+            
+            if exportZipPath.exists():
+                shutil.copy(exportZipPath, bundlePath)
+            else:
+                # Create empty zip if export has no data
+                with zipfile.ZipFile(bundlePath, 'w') as zf:
+                    pass
+            
+            # Always add run.json to the bundle (even if no data events)
+            # Get the run folder to find run.json
+            runFolder = self.runStore._findRunFolder(username, runNumber)
+            if runFolder:
+                runJsonPath = runFolder / 'run.json'
+                if runJsonPath.exists():
+                    # Add run.json to the zip
+                    with zipfile.ZipFile(bundlePath, 'a') as zf:
+                        zf.write(runJsonPath, 'run.json')
+            
+            # Return the zip file
+            if not bundlePath.exists():
+                return web.json_response({'error': 'Bundle generation failed'}, status=500)
+            
+            return web.FileResponse(
+                bundlePath,
+                headers={'Content-Disposition': f'attachment; filename="run{runNumber}_bundle.zip"'}
+            )
+            
+        except asyncio.TimeoutError:
+            return web.json_response({'error': 'Export timed out'}, status=504)
+        except Exception as e:
+            self.log.error(f"[Server] Bundle export failed: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    async def handleGetRunSettings(self, request: web.Request) -> web.Response:
+        """
+        Get user's run settings (default runType, last runName, etc.).
+        
+        GET /api/runs/settings
+        """
+        user = self._getAuthUser(request)
+        if not user:
+            return web.json_response({'error': 'Unauthorized'}, status=401)
+        
+        username = user.get('username')
+        settings = self.runStore.getUserRunSettings(username)
+        return web.json_response({'settings': settings})
+    
+    async def handleSetRunSettings(self, request: web.Request) -> web.Response:
+        """
+        Save user's run settings.
+        
+        PUT /api/runs/settings
+        """
+        user = self._getAuthUser(request)
+        if not user:
+            return web.json_response({'error': 'Unauthorized'}, status=401)
+        
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({'error': 'Invalid JSON'}, status=400)
+        
+        username = user.get('username')
+        self.runStore.setUserRunSettings(username, data)
+        return web.json_response({'status': 'ok'})
+
     async def _broadcastPresentationUpdate(
         self, 
         scopeId: str, 
@@ -1587,14 +1889,15 @@ class NovaServer:
         Compute effective scopes for user.
         
         effectiveScopes = userAllowedScopes ∩ serverAllowedScopes
-        'ALL' means unrestricted access to all server scopes.
+        'ALL' means unrestricted access to all scopes (no filtering).
         """
         userScopes = user.get('allowedScopes', [])
-        serverScopes = self.config.get('allowedScopes', [self.config.get('scopeId', 'default')])
         
-        # ALL means access to all server scopes
+        # ALL means unrestricted access - return special marker
         if 'ALL' in userScopes:
-            return set(serverScopes)
+            return {'ALL'}  # Special marker meaning "any scope is allowed"
+        
+        serverScopes = self.config.get('allowedScopes', [self.config.get('scopeId', 'default')])
         
         # Intersection
         return set(userScopes) & set(serverScopes)
@@ -1611,6 +1914,7 @@ class NovaServer:
         Returns (scopeId, None) on success, or (None, errorResponse) on failure.
         
         Rules:
+        - If user has 'ALL' access, any scopeId is allowed
         - If request has ?scopeId=, validate it's in effectiveScopes
         - If no scopeId and single scope: use it
         - If no scopeId and multi scope:
@@ -1624,13 +1928,26 @@ class NovaServer:
         
         requestedScope = request.query.get('scopeId')
         
+        # 'ALL' marker means any scope is allowed
+        hasAllAccess = 'ALL' in effectiveScopes
+        
         if requestedScope:
-            # Validate requested scope
-            if requestedScope not in effectiveScopes:
+            # Validate requested scope (unless user has ALL access)
+            if not hasAllAccess and requestedScope not in effectiveScopes:
                 return None, web.json_response({'error': f'Scope not accessible: {requestedScope}'}, status=403)
             return requestedScope, None
         
         # No scope specified
+        if hasAllAccess:
+            # User with ALL access must specify scope for writes
+            if requireForWrite:
+                return None, web.json_response(
+                    {'error': 'scopeId required for write operations'}, 
+                    status=400
+                )
+            # For reads, return None to signal aggregation
+            return None, None
+        
         if len(effectiveScopes) == 1:
             return next(iter(effectiveScopes)), None
         

@@ -313,30 +313,24 @@ Acceptance criteria:
 - New runs default to that manifest type until changed.
 - Persist this preference in the user’s run settings file.
 
-## 11.2 Run manifests (per-user; UI-created)
+## 11.2 Run manifests (extensible, manifest-driven)
 
-### Manifest types (Phase 11 only)
-Phase 11 supports exactly two run form types:
+### Manifest types (Phase 11)
 1) **Generic run**
 - Contains the shared fields: start/stop, runNumber, runName, analystNotes, On/Off, etc.
 
 2) **hardwareService run**
-- Same base fields as generic + domain-specific fields:
+- Inherits from generic and includes:
+  - On/Off buttons
   - Signal selection toggles grouped by constellation
+  - (For now: same base fields as generic + domain-specific fields. Keep inheritance path for future run types.)
 
-### Separation from NOVA UI manifests (do not conflate)
-- Run manifests are **per-user UI config artifacts** (stored under the user folder).
-- They are **not** NOVA UI manifests and must not be published as truth events.
-- Implementation is minimal: a simple `runType` switch that renders either the generic or hardwareService form (no general-purpose manifest engine in Phase 11).
+> The manifest system should drive the UI rendering of these forms (consistent with the overall cards/shields approach).
 
 ## 11.3 Run fields (generic)
 
 - `startTime` (second precision)
 - `stopTime` (second precision)
-- `timebase`:
-  - set on run creation to the **server's default truth timebase** for that NOVA instance
-  - `startTime`/`stopTime` are stored and interpreted in this timebase (no mixing within a run)
-  - not editable in Phase 11
 - `runNumber`:
   - default = previous runNumber + 1 (for that user)
   - editable
@@ -349,17 +343,14 @@ Phase 11 supports exactly two run form types:
   - clicking **Off** sets stopTime to current cursor time
   - after clicking, show normal editable datetime inputs
 
-## 11.4 hardwareService signal selection (hardcoded universe; availability from metadata only)
+## 11.4 hardwareService signal selection (hardcoded list for now)
 
-- The **GNSS receiver card** signals table/list in NOVA is built only from **hardwareService metadata messages that have arrived** (per-receiver/per-hardware). NOVA must not invent or infer signals.
-- The **hardwareService run** form provides a table of toggles/checkmarks:
+- Provide a table of toggles/checkmarks:
   - Organized by constellation
-  - The toggle *universe* is copied in once from the `sdk/parsers/sbf` signals dictionary (hardcoded for now; will be updated later).
-- UI availability rule (minimal):
-  - Only show/enable toggles that exist in the latest available hardwareService metadata for the selected receiver at the current cursor time.
-  - Toggles not present in metadata are hidden/disabled (no guessing).
+  - Includes every sub-signal (from `sdk/parsers/sbf`)
+- For now: the list is **hardcoded into the manifest** (copied in once).
 - Default selection:
-  - Auto-populate from last-selected configuration for that user (last write wins), applied only to currently-available toggles.
+  - auto-populate from last-selected configuration for that user (last write wins).
 
 ## 11.5 Storage layout (per-user run folders)
 
@@ -381,18 +372,11 @@ Phase 11 supports exactly two run form types:
   - run definition fields
   - selected manifest type
   - signal selection (if applicable)
-- `bundle.zip` (generated on download; always regenerated; stored in this folder and overwritten in-place)
+- Optional: cached export outputs and/or zip artifacts
 
 ### Naming + sanitization
-- Implement filename sanitization for `runName` such that the resulting folder name is safe on **Linux and Windows**.
-- Folder name uses the sanitized name:
-  - `"{runNumber}. {sanitizedRunName}"`
-- Folder names **track renames**:
-  - If the user edits `runName`, the server renames the folder to match the new sanitized name.
-  - If the target folder already exists, **overwrite is allowed** by:
-    1) deleting the existing target folder entirely, then
-    2) performing the rename/move (last write wins).
-- `run.json` always stores the canonical `runName` (unsanitized display string) regardless of folder name.
+- Define and implement filename sanitization rules for `runName` (filesystem safe).
+- Decide whether folder names are immutable or can be renamed when runName changes; record the canonical runName inside run.json regardless.
 
 Concurrency:
 - last write wins.
@@ -400,15 +384,14 @@ Concurrency:
 ## 11.6 Replay playback + export
 
 ### Playback behavior
-- Selecting a run clamps the user’s playback window to `[startTime, stopTime]` in the run’s `timebase`.
+- Selecting a run clamps the user’s playback window to `[startTime, stopTime]`.
 - All standard playback controls operate within the window.
 - Jump to live exits clamp.
 
-### Bundle export (Phase 6 drivers; zipped; always regenerated)
-- “Download bundle” triggers the Phase 6 driver export pipeline for `[startTime, stopTime]` in the run’s `timebase`.
-- Export is **always regenerated** on request (no reuse).
+### Bundle export (Phase 6 drivers; zipped)
+- “Download bundle” triggers the Phase 6 driver export pipeline for `[startTime, stopTime]`.
 - Zip includes **exactly** the folder/file structure the drivers would have written.
-- The zip is written as `bundle.zip` inside the run folder (overwritten in-place) and served through NOVA.
+- Delivered through NOVA.
 
 Acceptance criteria:
 - Runs persist across reload/restart.
@@ -439,11 +422,11 @@ Acceptance criteria:
 
 ### Phase 11
 - [ ] Replays tab exists; Make Replay shield + per-run shields/cards.
-- [ ] Run form dropdown selects between generic/hardwareService; persists user default.
-- [ ] Run stores `timebase` (server default at creation); On/Off sets start/stop from cursor time in that timebase.
-- [ ] hardwareService toggles are hardcoded from `sdk/parsers/sbf` *and* only shown/enabled when present in hardwareService metadata.
-- [ ] Runs stored under `data/users/<user>/runs/{runNumber}. {sanitizedRunName}/`; renames overwrite by delete-then-rename.
-- [ ] Download bundle always regenerates; writes `bundle.zip` in the run folder; zip matches driver outputs for the run window/timebase.
+- [ ] Run manifest dropdown selects between generic/hardwareService; persists user default.
+- [ ] On/Off sets start/stop from cursor time, then editable.
+- [ ] Signals list is hardcoded into manifest; defaults to last selection.
+- [ ] Runs stored under `data/users/<user>/runs/{runNumber}. {runName}/`.
+- [ ] Download bundle zips driver outputs for the run’s time window.
 
 ---
 

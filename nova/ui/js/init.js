@@ -75,6 +75,11 @@ function initApp() {
             });
         }
         
+        // Set admin flag for presentation editor
+        if (window.NovaPres) {
+            window.NovaPres.setAdmin(user.role === 'admin');
+        }
+        
         console.log('[Init] Authenticated as:', user.username, 'role:', user.role);
     }
     
@@ -84,6 +89,11 @@ function initApp() {
     initDisplay();
     initStreams();
     initPanelResizing();
+    
+    // Initialize replays (Phase 11)
+    if (window.initReplays) {
+        initReplays();
+    }
     
     // Initialize chat if available
     if (window.NovaChat) {

@@ -128,10 +128,9 @@ class StreamCursor:
                         # Infinite REWIND: historical data won't change, continue immediately
                         continue
                     else:
-                        # Bounded streaming: we've reached the end
-                        self.log.info(f"[Stream] Complete (no more data): requestId={self.playbackRequestId}")
-                        await chunkQueue.put(StreamComplete(playbackRequestId=self.playbackRequestId))
-                        break
+                        # Bounded streaming: continue scanning (data may be sparse)
+                        # Only complete when cursor reaches boundary (checked at loop start)
+                        continue
                 
                 # Emit chunk with cursor position (server-driven timeline)
                 chunkCount += 1

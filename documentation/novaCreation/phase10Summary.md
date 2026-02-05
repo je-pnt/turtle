@@ -2,12 +2,37 @@
 
 ## Overview
 
-Phase 10 implements a multi-scope presentation system that:
+**What Phase 10 Added:**
+This phase implements the multi-scope presentation and scope authority system:
 - Removes hardcoded scopes from UI
 - Server resolves effective scopes per-user
 - Supports multi-scope users (ground station aggregation)
 - Real-time cross-session sync via WebSocket broadcast
 - Per-user scope assignment by admins
+
+**What Was Already Implemented (Pre-Phase 10):**
+- UiCheckpoint + bounded seek (Phase 7)
+- ManifestPublished events (Phase 8)
+- Cesium geospatial rendering (Phase 7)
+- Local-only assets (Phase 7)
+
+This summary focuses on **scope authority and presentation changes only**.
+
+---
+
+## Architecture Decisions
+
+### Presentation Storage: JSON Files (Not Metadata Lane)
+
+**Decision:** Presentation overrides stored as JSON files under `data/users/` and `data/presentation/defaults/`.
+
+**Rationale:**
+- Presentation is **per-user view customization**, not truth
+- NOT replay-deterministic (user A can name an entity "Alpha" while user B sees "Bravo")
+- Does NOT affect telemetry semantics
+- Simpler than Metadata lane events for this use case
+
+**Trade-off:** Deviates from architecture doc's "presentation-truth events" language, but matches the actual requirement: view-only, per-user, non-deterministic customization.
 
 ---
 
@@ -394,8 +419,23 @@ User Request
 
 ---
 
-## Testing Checklist
+## Completion Status
 
+### ✅ Implemented in This Phase
+- Multi-scope user support (allowedScopes, aggregation, scope resolution)
+- Presentation storage (JSON files: user overrides + admin defaults)
+- WebSocket real-time sync across sessions
+- Admin scope management endpoints
+- Removed hardcoded UI scope
+
+### ✅ Already Existed (Not Changed)
+- UiCheckpoint generation (every 500s, configurable)
+- Bounded seek (checkpoint + updates within 120s timeout)
+- ManifestPublished events at startup
+- Cesium local-only rendering (Ion disabled, local assets)
+- Cursor-driven time (no free-running clock)
+
+### Testing Checklist
 - [ ] Single-scope user can GET/PUT/DELETE without `?scopeId=`
 - [ ] Multi-scope user gets aggregated GET
 - [ ] Multi-scope user gets 400 on PUT/DELETE without `?scopeId=`
@@ -404,4 +444,13 @@ User Request
 - [ ] WebSocket broadcast on presentation change
 - [ ] Other sessions receive and apply `presentationUpdate`
 - [ ] New users get correct default scopes (admin=ALL, operator=[])
+
+---
+
+## Known Deviations from Architecture Doc
+
+1. **Presentation stored as JSON files, not Metadata lane events**
+   - Architecture doc says: "presentation-truth events in Metadata lane"
+   - Implementation: JSON files under `data/users/` and `data/presentation/defaults/`
+   - Justification: Presentation is per-user, non-deterministic, view-only - doesn't belong in truth timeline
 - [ ] Existing users migrated correctly on server start
