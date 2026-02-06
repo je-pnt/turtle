@@ -4,3 +4,6 @@ data/
 
 # local nova db
 /nova/data/
+
+# local nova db
+/nova/data/
