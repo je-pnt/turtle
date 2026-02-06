@@ -135,7 +135,7 @@ class TestPhase11Syntax:
             'renderMakeReplayCard',
             'renderRunCard',
             'renderSignalToggles',
-            'createRunFromForm'
+            'saveNewRun'
         ]
         
         for func in required_functions:
@@ -308,7 +308,8 @@ class TestRunStoreUnit:
         
         # Check that fields are defined (but no hardcoded signal list!)
         field_ids = [f.fieldId for f in hs_manifest.fields]
-        assert 'musicTimes' in field_ids, "hardwareService should have musicTimes field"
+        assert 'musicOnTimes' in field_ids, "hardwareService should have musicOnTimes field"
+        assert 'musicOffTimes' in field_ids, "hardwareService should have musicOffTimes field"
         assert 'signals' in field_ids, "hardwareService should have signals field"
         
         print(f"✅ Run manifest discovery: {len(types)} types found")

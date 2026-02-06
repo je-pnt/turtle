@@ -15,16 +15,17 @@
 const timeline = {
     mode: 'LIVE',           // 'LIVE' or 'REWIND'
     isPlaying: true,         // Playing or paused
+    isDragging: false,       // True when user is dragging slider (prevents reset)
     rate: 1.0,               // Playback rate (+ forward, - backward)
     timebase: 'canonical',   // 'source' or 'canonical' (loaded from config)
     currentTimeUs: 0,        // Current cursor position (microseconds)
     lastDataTimeUs: null,    // Last event time we actually received (for REWIND)
     playbackRequestId: null, // Active stream fence token
     
-    // Time window (1 hour max visible)
-    windowStartUs: 0,
+    // Time window: LHS = session start, RHS = now (real-time)
+    // Linear mapping: slider 0% = windowStartUs, 100% = now
+    windowStartUs: 0,        // Session start (extends if cursor goes earlier)
     windowEndUs: 0,
-    windowSizeUs: 3600 * 1_000_000,  // 1 hour in microseconds
     
     // Clamp (Phase 11 - UI-only restriction to a run's time window)
     clamp: null  // {startTimeSec, stopTimeSec, timebase} or null
@@ -51,11 +52,11 @@ async function initTimeline() {
         console.warn('[Timeline] Config fetch error, using defaults:', error);
     }
     
-    // Initialize timeline at current time (LIVE will query backward to find data)
+    // Initialize timeline: RHS = now, LHS = now (grows as time passes or user rewinds)
     const nowUs = Date.now() * 1000;
     timeline.currentTimeUs = nowUs;
     timeline.windowEndUs = nowUs;
-    timeline.windowStartUs = nowUs - timeline.windowSizeUs;
+    timeline.windowStartUs = nowUs;
     
     // Attach event listeners
     document.getElementById('playPauseBtn').addEventListener('click', handlePlayPause);
@@ -66,19 +67,28 @@ async function initTimeline() {
     
     // Use 'change' instead of 'input' for slider to avoid rapid firing
     const slider = document.getElementById('timeSlider');
-    let sliderDragTimeout = null;
     slider.addEventListener('input', (event) => {
+        // Mark as dragging to prevent updateDisplay from resetting position
+        timeline.isDragging = true;
         // Update cursor visual immediately
         const position = parseFloat(event.target.value);
         const windowRange = timeline.windowEndUs - timeline.windowStartUs;
         const timeUs = timeline.windowStartUs + (position / 100) * windowRange;
         timeline.currentTimeUs = timeUs;
-        updateDisplay();
+        // Update time display but NOT slider (we're dragging it)
+        const date = new Date(timeline.currentTimeUs / 1000);
+        const hours = String(date.getUTCHours()).padStart(2, '0');
+        const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+        const ms = String(date.getMilliseconds()).padStart(3, '0');
+        document.getElementById('timeDisplay').textContent = `${hours}:${minutes}:${seconds}.${ms}`;
+        document.getElementById('timelineCursor').style.left = position + '%';
     });
     slider.addEventListener('change', (event) => {
+        // Drag complete
+        timeline.isDragging = false;
         // On release, actually jump to the time
-        clearTimeout(sliderDragTimeout);
-        sliderDragTimeout = setTimeout(() => handleSliderDrag(event), 300);
+        handleSliderDrag(event);
     });
     
     // Update display every 100ms (10 Hz)
@@ -135,16 +145,11 @@ function handlePlayPause() {
         timeline.isPlaying = !timeline.isPlaying;
         
         if (timeline.isPlaying) {
-            // Resume: restart stream at current position with rate=1
-            setTimeout(() => {
-                if (window.wsState?.connected && !window.wsState?.reconnecting) {
-                    startStream();
-                }
-            }, 200);
+            // Resume: restart stream at current position
+            startStream();
         } else {
-            // Pause: change rate to 0 instead of canceling
-            // This keeps cursor position for bound output streams
-            setPlaybackRate(0);
+            // Pause: cancel stream (architecture requires cancel+restart for any change)
+            cancelStream();
         }
         updateUI();
     }
@@ -160,8 +165,8 @@ function handleJumpToLive() {
     // Exit clamp (Phase 11)
     timeline.clamp = null;
     if (window.clearClamp) window.clearClamp();
-    timeline.windowEndUs = timeline.currentTimeUs;
-    timeline.windowStartUs = timeline.currentTimeUs - timeline.windowSizeUs;
+    // windowStartUs stays — represents earliest known time
+    // windowEndUs will be updated to now by updateDisplay
     
     // Update UI inputs
     document.getElementById('speedInput').value = '1.0';
@@ -169,11 +174,7 @@ function handleJumpToLive() {
     document.getElementById('timeSlider').value = '100';
     
     // Start new stream directly (server handles implicit cancel)
-    setTimeout(() => {
-        if (window.wsState?.connected && !window.wsState?.reconnecting) {
-            startStream();
-        }
-    }, 200);
+    startStream();
     updateUI();
 }
 
@@ -192,20 +193,13 @@ function handleSpeedChange(event) {
         // Use last data time if available, otherwise current cursor position
         if (timeline.lastDataTimeUs) {
             timeline.currentTimeUs = timeline.lastDataTimeUs;
-        } else {
         }
-        // Keep cursor where it is (don't jump to center)
-        timeline.windowEndUs = timeline.currentTimeUs + (timeline.windowSizeUs / 2);
-        timeline.windowStartUs = timeline.currentTimeUs - (timeline.windowSizeUs / 2);
+        // Window stays: startUs = session start, endUs = now
     }
     
     if (timeline.isPlaying) {
-        // Don't cancel, just start new stream (server handles implicit cancel)
-        setTimeout(() => {
-            if (window.wsState?.connected && !window.wsState?.reconnecting) {
-                startStream();
-            }
-        }, 200);
+        // Start new stream (server handles implicit cancel)
+        startStream();
     }
     updateUI();
 }
@@ -222,11 +216,7 @@ function handleTimebaseChange(event) {
     
     // Timebase change requires cancel + restart stream (different ordering)
     if (timeline.isPlaying) {
-        setTimeout(() => {
-            if (window.wsState?.connected && !window.wsState?.reconnecting) {
-                startStream();
-            }
-        }, 200);
+        startStream();
     }
     updateUI();
 }
@@ -235,22 +225,12 @@ function handleDatetimeJump(event) {
     const dateStr = event.target.value;
     if (!dateStr) return;
     
-    const targetDate = new Date(dateStr);
+    // datetime-local gives us local time, but timeline uses UTC
+    // Parse as UTC by appending 'Z' or manually constructing UTC timestamp
+    const targetDate = new Date(dateStr + 'Z');  // Interpret as UTC
     const targetTimeUs = targetDate.getTime() * 1000;
     
-    timeline.mode = 'REWIND';
-    timeline.currentTimeUs = targetTimeUs;
-    timeline.windowEndUs = targetTimeUs + (timeline.windowSizeUs / 2);
-    timeline.windowStartUs = targetTimeUs - (timeline.windowSizeUs / 2);
-    
-    if (timeline.isPlaying) {
-        setTimeout(() => {
-            if (window.wsState?.connected && !window.wsState?.reconnecting) {
-                startStream();
-            }
-        }, 200);
-    }
-    updateUI();
+    seekToTime(targetTimeUs);
 }
 
 function handleSliderDrag(event) {
@@ -262,44 +242,45 @@ function handleSliderDrag(event) {
     } else {
         // Calculate time from slider position
         const timeUs = timeline.windowStartUs + (position / 100) * (timeline.windowEndUs - timeline.windowStartUs);
-        
-        timeline.mode = 'REWIND';
-        timeline.currentTimeUs = timeUs;
-        
-        if (timeline.isPlaying) {
-            setTimeout(() => {
-                if (window.wsState?.connected && !window.wsState?.reconnecting) {
-                    startStream();
-                }
-            }, 200);
-        }
-        updateUI();
+        seekToTime(timeUs);
     }
 }
 
+/**
+ * Seek to a specific time (microseconds).
+ * Unified function for datetime input and slider drag.
+ */
+function seekToTime(targetTimeUs) {
+    timeline.mode = 'REWIND';
+    timeline.currentTimeUs = targetTimeUs;
+    
+    // Extend windowStartUs if seeking before current start
+    if (targetTimeUs < timeline.windowStartUs) {
+        timeline.windowStartUs = targetTimeUs;
+    }
+    
+    if (timeline.isPlaying) {
+        startStream();
+    }
+    updateUI();
+}
+
 function updateDisplay() {
+    // RHS of timeline is always real-time now
+    timeline.windowEndUs = Date.now() * 1000;
+    
     if (timeline.mode === 'LIVE' && timeline.isPlaying) {
-        // In LIVE mode, cursor follows actual data time (set by appendEvents)
-        // Only update if we haven't received data yet
-        if (!timeline.lastDataTimeUs) {
-            timeline.currentTimeUs = Date.now() * 1000;
+        // In LIVE mode, cursor = now (right edge)
+        if (timeline.lastDataTimeUs) {
+            timeline.currentTimeUs = timeline.lastDataTimeUs;
+        } else {
+            timeline.currentTimeUs = timeline.windowEndUs;
         }
-        timeline.windowEndUs = timeline.currentTimeUs + (timeline.windowSizeUs / 2);
-        timeline.windowStartUs = timeline.currentTimeUs - (timeline.windowSizeUs / 2);
     } else if (timeline.mode === 'REWIND' && timeline.isPlaying) {
-        // Server-driven cursor: timeline.currentTimeUs is updated by appendEvents from chunk metadata
-        // Stream already respects clamp bounds (startTime/stopTime in request)
-        // When stream ends (server sends end-of-stream), we pause
-        
-        // Adjust window if cursor goes out of bounds
-        if (timeline.currentTimeUs > timeline.windowEndUs) {
-            const shift = timeline.currentTimeUs - timeline.windowEndUs;
-            timeline.windowStartUs += shift;
-            timeline.windowEndUs += shift;
-        } else if (timeline.currentTimeUs < timeline.windowStartUs) {
-            const shift = timeline.windowStartUs - timeline.currentTimeUs;
-            timeline.windowStartUs -= shift;
-            timeline.windowEndUs -= shift;
+        // Server-driven cursor: updated by appendEvents from chunk metadata
+        // Extend windowStartUs if cursor rewinds past it
+        if (timeline.currentTimeUs < timeline.windowStartUs) {
+            timeline.windowStartUs = timeline.currentTimeUs;
         }
     }
     
@@ -316,6 +297,13 @@ function updateDisplay() {
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const dateStr = `${months[date.getUTCMonth()]} ${date.getUTCDate()}, ${date.getUTCFullYear()}`;
     document.getElementById('timelineDate').textContent = `${dateStr} UTC`;
+    
+    // Update datetime input to show current cursor time in UTC (YYYY-MM-DDTHH:MM:SS format)
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(date.getUTCDate()).padStart(2, '0');
+    const datetimeValue = `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
+    document.getElementById('datetimeInput').value = datetimeValue;
     
     // Update mode indicator
     const modeEl = document.getElementById('timeMode');
@@ -345,15 +333,20 @@ function updateDisplay() {
         commandBtn.disabled = timeline.mode !== 'LIVE';
     }
     
-    // Update slider position
-    if (timeline.mode === 'LIVE') {
-        document.getElementById('timeSlider').value = '100';
-        document.getElementById('timelineCursor').style.left = '100%';
-    } else {
-        const windowRange = timeline.windowEndUs - timeline.windowStartUs;
-        const position = ((timeline.currentTimeUs - timeline.windowStartUs) / windowRange) * 100;
-        document.getElementById('timeSlider').value = position;
-        document.getElementById('timelineCursor').style.left = position + '%';
+    // Update slider position (skip if user is dragging)
+    if (!timeline.isDragging) {
+        if (timeline.mode === 'LIVE') {
+            document.getElementById('timeSlider').value = '100';
+            document.getElementById('timelineCursor').style.left = '100%';
+        } else {
+            const windowRange = timeline.windowEndUs - timeline.windowStartUs;
+            const position = windowRange > 0
+                ? ((timeline.currentTimeUs - timeline.windowStartUs) / windowRange) * 100
+                : 50;
+            const clamped = Math.max(0, Math.min(100, position));
+            document.getElementById('timeSlider').value = clamped;
+            document.getElementById('timelineCursor').style.left = clamped + '%';
+        }
     }
 }
 
@@ -370,16 +363,8 @@ function updateUI() {
 }
 
 function cancelAndStartStream() {
-    cancelStream();
-    // Delay to ensure cancel is processed and websocket is still open
-    setTimeout(() => {
-        // Double-check websocket is still connected before starting
-        if (window.wsState?.connected && !window.wsState?.reconnecting) {
-            startStream();
-        } else {
-            console.warn('[Timeline] Skipping startStream - websocket not ready');
-        }
-    }, 500);
+    // Server handles implicit cancel when new stream starts
+    startStream();
 }
 
 function startStream() {
@@ -394,7 +379,9 @@ function startStream() {
         return;
     }
     
-    timeline.playbackRequestId = generateUUID();
+    // playbackRequestId is generated by server and returned in streamStarted
+    // Keep old ID until streamStarted arrives — prevents fencing race
+    // (old stream chunks stop naturally via server implicit cancel)
     
     // Calculate start/stop times based on mode and clamp
     let startTime, stopTime;
@@ -419,7 +406,6 @@ function startStream() {
     const request = {
         type: 'startStream',
         clientConnId: window.wsState.connId,
-        playbackRequestId: timeline.playbackRequestId,
         startTime: startTime,
         stopTime: stopTime,
         rate: timeline.rate,
@@ -431,29 +417,6 @@ function startStream() {
     const startDate = startTime ? new Date(startTime / 1000) : new Date();
     const stopDate = stopTime ? new Date(stopTime / 1000) : null;
     console.log('[Timeline] Starting stream:', startDate.toISOString(), '→', stopDate?.toISOString() || 'LIVE', 'rate=', timeline.rate);
-    window.sendWebSocketMessage(request);
-}
-
-function setPlaybackRate(rate) {
-    if (!window.wsState?.connected || !timeline.playbackRequestId || window.wsState?.reconnecting) {
-        console.warn('[Timeline] Cannot set rate - not connected or no active stream');
-        return;
-    }
-    
-    // Check if websocket is open before sending
-    if (window.wsState.ws?.readyState !== WebSocket.OPEN) {
-        console.warn('[Timeline] Cannot set rate - websocket not open');
-        return;
-    }
-    
-    timeline.rate = rate;
-    
-    const request = {
-        type: 'setPlaybackRate',
-        rate: rate
-    };
-    
-    console.log('[Timeline] Setting playback rate:', rate);
     window.sendWebSocketMessage(request);
 }
 
@@ -478,14 +441,6 @@ function cancelStream() {
     timeline.playbackRequestId = null;
 }
 
-function generateUUID() {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-        const r = Math.random() * 16 | 0;
-        const v = c === 'x' ? r : (r & 0x3 | 0x8);
-        return v.toString(16);
-    });
-}
-
 /**
  * Format seconds timestamp for clamp display
  */
@@ -502,9 +457,6 @@ function formatClampTime(sec) {
 window.initTimeline = initTimeline;
 window.updateTimelineUI = updateUI;
 window.timeline = timeline;
-
-// Export for other modules
-window.timeline = timeline;
 window.startStream = startStream;
 window.cancelStream = cancelStream;
-window.cancelAndStartStream = cancelAndStartStream;
+window.seekToTime = seekToTime;

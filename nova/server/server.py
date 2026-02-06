@@ -961,8 +961,6 @@ class NovaServer:
                 await self._handleQuery(conn, message)
             elif msgType == 'startStream':
                 await self._handleStartStream(conn, message)
-            elif msgType == 'setPlaybackRate':
-                await self._handleSetPlaybackRate(conn, message)
             elif msgType == 'cancelStream':
                 await self._handleCancelStream(conn, message)
             elif msgType == 'command':
@@ -1047,23 +1045,6 @@ class NovaServer:
         
         except Exception as e:
             self.log.error(f"[Server] StartStream error: {e}", exc_info=True)
-            await conn.sendError(str(e))
-    
-    async def _handleSetPlaybackRate(self, conn: ClientConnection, message: Dict[str, Any]):
-        """Handle setPlaybackRate request - change rate without restarting stream"""
-        try:
-            rate = message['rate']
-            
-            # Tell Core to update the rate for this connection's cursor
-            await self.ipcClient.setPlaybackRate(conn.connId, rate)
-            
-            await conn.sendMessage({
-                'type': 'rateChanged',
-                'rate': rate
-            })
-        
-        except Exception as e:
-            self.log.error(f"[Server] SetPlaybackRate error: {e}", exc_info=True)
             await conn.sendError(str(e))
     
     async def _handleCancelStream(self, conn: ClientConnection, message: Dict[str, Any]):

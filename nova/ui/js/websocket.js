@@ -251,9 +251,15 @@ function handleStreamChunk(msg) {
             });
             if (msg.timestamp) {
                 const cursorDate = new Date(msg.timestamp / 1000);
+                const gapMs = wsState.lastChunkTimestamp 
+                    ? (msg.timestamp - wsState.lastChunkTimestamp) / 1000 
+                    : 0;
                 console.log('[WS] Stream chunk #' + wsState.chunkCount + ':', msg.events.length, 'events, lanes:', laneCounts, 
-                           'cursor:', cursorDate.toISOString());
+                           'cursor:', cursorDate.toISOString(), 'gap:', gapMs.toFixed(0) + 'ms');
             }
+        }
+        if (msg.timestamp) {
+            wsState.lastChunkTimestamp = msg.timestamp;
         }
         
         // Attach server cursor for timeline sync

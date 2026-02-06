@@ -172,20 +172,6 @@ class ServerIPCClient:
         
         self.log.info(f"[ServerIPC] Stream cancel sent: conn={clientConnId}")
     
-    async def setPlaybackRate(self, clientConnId: str, rate: float):
-        """Send SetPlaybackRate request to Core"""
-        requestId = str(uuid.uuid4())
-        
-        request = {
-            'type': 'setPlaybackRate',
-            'requestId': requestId,
-            'clientConnId': clientConnId,
-            'rate': rate
-        }
-        
-        await self._sendRequest(request)
-        self.log.info(f"[ServerIPC] Playback rate set: conn={clientConnId}, rate={rate}")
-    
     async def submitCommand(self,
                            clientConnId: str,
                            commandId: str,

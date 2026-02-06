@@ -220,7 +220,8 @@ class BaseStreamServer(ABC):
             return
         
         disconnected = []
-        for connId, conn in self._connections.items():
+        # Use list() to avoid "dictionary changed size during iteration" error
+        for connId, conn in list(self._connections.items()):
             try:
                 await conn.write(data)
             except Exception:

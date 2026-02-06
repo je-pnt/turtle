@@ -1,15 +1,31 @@
 """Test replay data flow - queries past data from database"""
 import asyncio
 import aiohttp
+import os
 from datetime import datetime, timezone, timedelta
+
+BASE_URL = "http://localhost:80"
+WS_URL = "ws://localhost:80/ws"
+ADMIN_USER = os.getenv("NOVA_ADMIN_USER", "admin")
+ADMIN_PASS = os.getenv("NOVA_ADMIN_PASS", "admin123")
+
+
+async def login(session: aiohttp.ClientSession) -> None:
+    resp = await session.post(
+        f"{BASE_URL}/auth/login",
+        json={"username": ADMIN_USER, "password": ADMIN_PASS}
+    )
+    if resp.status != 200:
+        raise RuntimeError(f"Login failed: {resp.status} {await resp.text()}")
 
 async def test_replay():
     async with aiohttp.ClientSession() as session:
-        async with session.ws_connect('ws://localhost:80/ws') as ws:
-            # Auth
-            await ws.send_json({'type': 'auth', 'token': None})
+        await login(session)
+        async with session.ws_connect(WS_URL) as ws:
             resp = await ws.receive_json()
             print(f'Auth: {resp}')
+            if not resp.get('success'):
+                raise RuntimeError(f"WS auth failed: {resp}")
             
             # Request REWIND stream (past 5 minutes)
             now = datetime.now(timezone.utc)

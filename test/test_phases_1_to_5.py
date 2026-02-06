@@ -588,7 +588,7 @@ class TestPhase5Commands:
         event = events[0]
         assert event['systemId'] == "nova"
         assert event['containerId'] == "nova-instance-1"
-        assert event['uniqueId'] == "request-12345"
+        assert event['uniqueId'] == uniqueId
     
     def test_command_progress_identity_model(self, ingestPipeline, tempDb):
         """CommandProgress uses systemId + containerId + uniqueId"""

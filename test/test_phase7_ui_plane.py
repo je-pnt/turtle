@@ -31,7 +31,7 @@ from nova.core.events import (
     buildEntityIdentityKey, computeEventId
 )
 from nova.core.database import Database
-from nova.core.uiState import UiStateManager, EntityViewKey, CHECKPOINT_INTERVAL_MINUTES
+from nova.core.uiState import UiStateManager, EntityViewKey, DEFAULT_CHECKPOINT_INTERVAL_SECONDS
 
 
 @pytest.fixture
@@ -244,7 +244,7 @@ class TestUiStateManager:
         assert acc.data["lon"] == -122.0
     
     def test_periodic_checkpoint_check(self, uiStateManager):
-        """Periodic checkpoint triggers after 60 minutes"""
+        """Periodic checkpoint triggers when bucket advances"""
         key = EntityViewKey(
             scopeId="test",
             systemId="hs",
@@ -269,12 +269,13 @@ class TestUiStateManager:
         )
         uiStateManager.processUiUpdate(update1)
         
-        # Not enough time passed
-        notEnough = "2026-01-28T12:30:00Z"
+        # Not enough time passed (same bucket)
+        start = datetime.fromisoformat("2026-01-28T12:00:00+00:00")
+        notEnough = (start + timedelta(seconds=DEFAULT_CHECKPOINT_INTERVAL_SECONDS - 1)).isoformat()
         assert not uiStateManager.shouldGeneratePeriodicCheckpoint(key, notEnough)
         
-        # 61 minutes later
-        enough = "2026-01-28T13:01:00Z"
+        # Next bucket
+        enough = (start + timedelta(seconds=DEFAULT_CHECKPOINT_INTERVAL_SECONDS + 1)).isoformat()
         assert uiStateManager.shouldGeneratePeriodicCheckpoint(key, enough)
 
 

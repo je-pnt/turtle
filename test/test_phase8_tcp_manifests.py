@@ -13,17 +13,11 @@ Property of Uncompromising Sensors LLC.
 import pytest
 import asyncio
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
 
 from nova.core.manifests.cards import (
     CardManifest, CardRegistry, getCardRegistry, getAllCardManifestsDict
 )
-from nova.server.streamEntities import (
-    StreamEntityManager, StreamEntity, StreamState,
-    STREAM_SYSTEM_ID, STREAM_CONTAINER_ID, STREAM_ENTITY_TYPE
-)
-from nova.server.tcp import TcpStreamConfig, TcpServer
-from nova.core.contracts import TimelineMode
+from nova.server.streamStore import StreamDefinition, StreamStore
 
 
 class TestManifestDiscovery:
@@ -109,215 +103,62 @@ class TestManifestDiscovery:
             assert isinstance(m['entityTypes'], list)
 
 
-class TestStreamEntity:
-    """Test TCP stream entity lifecycle"""
-    
-    @pytest.fixture
-    def mock_publisher(self):
-        """Mock event publisher"""
-        return AsyncMock()
-    
-    @pytest.fixture
-    def stream_manager(self, mock_publisher):
-        """Create stream entity manager with mock publisher"""
-        return StreamEntityManager(
-            scopeId='test-scope',
-            eventPublisher=mock_publisher,
-            timelineModeCallback=lambda: TimelineMode.LIVE
+class TestStreamDefinition:
+    """Test stream definition helpers"""
+
+    def test_selection_summary(self):
+        definition = StreamDefinition(
+            streamId="s1",
+            name="Test",
+            protocol="tcp",
+            endpoint="9101",
+            lane="raw",
+            systemIdFilter="hs",
+            containerIdFilter="n1"
         )
-    
-    @pytest.mark.asyncio
-    async def test_create_stream_emits_descriptor(self, stream_manager, mock_publisher):
-        """Creating stream should emit ProducerDescriptor"""
-        entity = await stream_manager.createStream({
-            'port': 9100,
-            'displayName': 'Test Stream'
-        }, createdBy='test-user')
-        
-        # Should have called publisher at least twice (descriptor + initial status)
-        assert mock_publisher.call_count >= 2
-        
-        # First call should be descriptor
-        first_call = mock_publisher.call_args_list[0]
-        event = first_call[0][0]
-        
-        assert event['messageType'] == 'ProducerDescriptor'
-        assert event['systemId'] == STREAM_SYSTEM_ID
-        assert event['containerId'] == STREAM_CONTAINER_ID
-        assert event['lane'] == 'metadata'
-        assert event['payload']['entityType'] == STREAM_ENTITY_TYPE
-    
-    @pytest.mark.asyncio
-    async def test_stream_has_correct_identity(self, stream_manager, mock_publisher):
-        """Stream entity should have correct identity"""
-        entity = await stream_manager.createStream({
-            'streamId': 'test-123',
-            'port': 9100,
-            'displayName': 'Test Stream'
-        })
-        
-        assert entity.streamId == 'test-123'
-        
-        # Check identity in published event
-        event = mock_publisher.call_args_list[0][0][0]
-        
-        assert event['systemId'] == 'tcpStream'
-        assert event['containerId'] == 'streams'
-        assert event['uniqueId'] == 'test-123'
-    
-    @pytest.mark.asyncio
-    async def test_start_stream_emits_status_update(self, stream_manager, mock_publisher):
-        """Starting stream should emit UiUpdate with state=starting"""
-        entity = await stream_manager.createStream({
-            'streamId': 'test-123',
-            'port': 9100,
-            'displayName': 'Test Stream'
-        })
-        
-        mock_publisher.reset_mock()
-        
-        await stream_manager.startStream('test-123')
-        
-        # Should emit UiUpdate with starting state
-        assert mock_publisher.call_count >= 1
-        event = mock_publisher.call_args_list[0][0][0]
-        
-        assert event['messageType'] == 'UiUpdate'
-        assert event['data']['state'] == 'starting'
-    
-    @pytest.mark.asyncio
-    async def test_stop_stream_emits_status_update(self, stream_manager, mock_publisher):
-        """Stopping stream should emit UiUpdate with state=stopped"""
-        entity = await stream_manager.createStream({
-            'streamId': 'test-123',
-            'port': 9100,
-            'displayName': 'Test Stream'
-        })
-        
-        await stream_manager.startStream('test-123')
-        mock_publisher.reset_mock()
-        
-        await stream_manager.stopStream('test-123')
-        
-        # Should emit UiUpdate with stopped state
-        event = mock_publisher.call_args_list[0][0][0]
-        
-        assert event['messageType'] == 'UiUpdate'
-        assert event['data']['state'] == 'stopped'
+
+        summary = definition.selectionSummary()
+        assert "raw" in summary
+        assert "sys=hs" in summary
+        assert "cont=n1" in summary
+
+    def test_is_single_identity(self):
+        definition = StreamDefinition(
+            streamId="s1",
+            name="Test",
+            protocol="tcp",
+            endpoint="9102",
+            lane="raw",
+            systemIdFilter="hs",
+            containerIdFilter="n1",
+            uniqueIdFilter="u1"
+        )
+
+        assert definition.isSingleIdentity() is True
 
 
-class TestReplayBlocking:
-    """Test that stream commands are blocked in REPLAY mode"""
-    
-    @pytest.fixture
-    def replay_mode_manager(self):
-        """Create manager in REPLAY mode"""
-        return StreamEntityManager(
-            scopeId='test-scope',
-            eventPublisher=AsyncMock(),
-            timelineModeCallback=lambda: TimelineMode.REPLAY
-        )
-    
-    @pytest.mark.asyncio
-    async def test_create_blocked_in_replay(self, replay_mode_manager):
-        """Stream creation should be blocked in REPLAY"""
-        with pytest.raises(ValueError, match="REPLAY"):
-            await replay_mode_manager.createStream({
-                'port': 9100,
-                'displayName': 'Test Stream'
-            })
-    
-    @pytest.mark.asyncio
-    async def test_start_blocked_in_replay(self, replay_mode_manager):
-        """Stream start should be blocked in REPLAY"""
-        # Can't even create in replay, so this tests the mechanism
-        with pytest.raises(ValueError, match="REPLAY"):
-            await replay_mode_manager.startStream('any-id')
-    
-    @pytest.mark.asyncio
-    async def test_stop_blocked_in_replay(self, replay_mode_manager):
-        """Stream stop should be blocked in REPLAY"""
-        with pytest.raises(ValueError, match="REPLAY"):
-            await replay_mode_manager.stopStream('any-id')
+class TestStreamStore:
+    """Test stream definition persistence"""
 
+    def test_create_and_list(self, tmp_path):
+        store = StreamStore(dbPath=tmp_path / "streams.db")
 
-class TestTcpStreamConfig:
-    """Test TCP stream configuration"""
-    
-    def test_config_defaults(self):
-        """Test TcpStreamConfig default values"""
-        config = TcpStreamConfig(
-            streamId='test',
-            displayName='Test',
-            port=9100,
-            scopeId='scope'
+        definition = StreamDefinition(
+            streamId="s1",
+            name="Test",
+            protocol="tcp",
+            endpoint="9103",
+            lane="raw",
+            outputFormat="hierarchyPerMessage",
+            enabled=False
         )
-        
-        assert config.laneFilter == 'raw'
-        assert config.visibility == 'private'
-        assert config.createdBy == 'system'
-    
-    def test_stream_entity_to_tcp_config(self):
-        """Test StreamEntity.toTcpConfig() conversion"""
-        entity = StreamEntity(
-            streamId='test-123',
-            displayName='Test Stream',
-            port=9100,
-            scopeId='test-scope',
-            createdBy='user1',
-            visibility='public'
-        )
-        
-        config = entity.toTcpConfig()
-        
-        assert config.streamId == 'test-123'
-        assert config.displayName == 'Test Stream'
-        assert config.port == 9100
-        assert config.scopeId == 'test-scope'
-        assert config.createdBy == 'user1'
-        assert config.visibility == 'public'
 
+        created = store.create(definition)
+        listed = store.list()
 
-class TestTcpStreamDescriptor:
-    """Test TCP stream descriptor generation"""
-    
-    def test_descriptor_contains_required_fields(self):
-        """Verify descriptor has all required fields"""
-        entity = StreamEntity(
-            streamId='test-123',
-            displayName='Test Stream',
-            port=9100,
-            scopeId='test-scope',
-            createdBy='user1',
-            visibility='public'
-        )
-        
-        descriptor = entity.toDescriptor()
-        
-        assert descriptor['uniqueId'] == 'test-123'
-        assert descriptor['displayName'] == 'Test Stream'
-        assert descriptor['port'] == 9100
-        assert descriptor['createdBy'] == 'user1'
-        assert descriptor['visibility'] == 'public'
-        assert descriptor['entityType'] == 'tcp-stream'
-    
-    def test_ui_update_contains_status_fields(self):
-        """Verify UiUpdate has status fields"""
-        entity = StreamEntity(
-            streamId='test-123',
-            displayName='Test Stream',
-            port=9100,
-            scopeId='test-scope',
-            state=StreamState.RUNNING,
-            bytesOut=1000,
-            msgsOut=10
-        )
-        
-        update = entity.toUiUpdate()
-        
-        assert update['state'] == 'running'
-        assert update['bytesOut'] == 1000
-        assert update['msgsOut'] == 10
+        assert created.streamId == "s1"
+        assert len(listed) == 1
+        assert listed[0].streamId == "s1"
 
 
 class TestCardManifestNotHardcoded:

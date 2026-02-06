@@ -80,6 +80,10 @@ class StreamCursor:
         if self.stopTime is None:
             self.newDataEvent = asyncio.Event()
         
+        # Event to notify followers when cursor advances (for bound output streams)
+        self.cursorAdvancedEvent = asyncio.Event()
+        self.lastWindow = None  # (t0, t1) tuple for followers to query
+        
     async def streamChunks(self, chunkQueue: asyncio.Queue):
         """
         Stream events server-paced according to rate.
@@ -117,15 +121,28 @@ class StreamCursor:
                 events = await self._readNextChunk()
                 
                 if not events:
-                    # No data in current window
+                    # No data in current window - emit empty chunk to advance timeline
                     if isLive:
                         # LIVE mode: wait for notification of new data
-                        self.log.debug(f"[Stream] No data, waiting for notification")
+                        self.log.debug(f"[Stream] LIVE no data, cursor={self.currentTime}, waiting for notification")
                         await self.newDataEvent.wait()
                         self.newDataEvent.clear()
                         continue
                     elif self.stopTime is None:
-                        # Infinite REWIND: historical data won't change, continue immediately
+                        # Infinite REWIND: emit cursor advance even with no data (always-move-time)
+                        # This prevents getting stuck at times with no data
+                        chunk = StreamChunk(
+                            playbackRequestId=self.playbackRequestId,
+                            events=[],
+                            timestamp=self.currentTime,
+                            complete=False
+                        )
+                        await chunkQueue.put(chunk)
+                        self.cursorAdvancedEvent.set()
+                        
+                        # Apply paced delay for smooth timeline advancement
+                        queryWindowUs = getattr(self, 'lastQueryWindowUs', 1_000_000)
+                        await self._pacedDelay(queryWindowUs)
                         continue
                     else:
                         # Bounded streaming: continue scanning (data may be sparse)
@@ -134,6 +151,9 @@ class StreamCursor:
                 
                 # Emit chunk with cursor position (server-driven timeline)
                 chunkCount += 1
+                if isLive and (chunkCount <= 3 or chunkCount % 50 == 0):
+                    self.log.info(f"[Stream] LIVE chunk #{chunkCount}: {len(events)} events, "
+                                f"cursor={self.lastEmittedCursor}, window={self.lastWindow}")
                 chunk = StreamChunk(
                     playbackRequestId=self.playbackRequestId,
                     events=events,
@@ -141,6 +161,9 @@ class StreamCursor:
                     complete=False
                 )
                 await chunkQueue.put(chunk)
+                
+                # Signal followers that cursor has advanced (they read lastWindow)
+                self.cursorAdvancedEvent.set()
                 
                 # Server-paced delay: ONLY for REWIND mode
                 # LIVE mode has natural pacing from data arrival rate
@@ -171,13 +194,14 @@ class StreamCursor:
         # LIVE only if no startTime was provided
         isLive = (self.startTime is None)
         nowUs = int(datetime.now(timezone.utc).timestamp() * 1_000_000)
-        isFirstQuery = not hasattr(self, '_queriedOnce')
         
         if self.currentTime is None:
-            # LIVE mode: query from "now" backwards to catch up
-            readStart = nowUs - (60 * 1_000_000)  # Last 1 minute
+            # LIVE mode: start from now (no lookback — UI state is a query concern)
+            readStart = nowUs
             readEnd = nowUs
-            actualWindowUs = readEnd - readStart
+            actualWindowUs = 0
+            self.currentTime = nowUs
+            self.log.info(f"[Stream] LIVE start from now")
         elif self.rate >= 0:
             # Forward: read window from cursor
             readStart = self.currentTime
@@ -185,11 +209,13 @@ class StreamCursor:
                 # Bounded forward: don't exceed stop boundary
                 readEnd = min(self.currentTime + queryWindowUs, self.stopTime)
             elif isLive:
-                # LIVE mode
-                if isFirstQuery:
-                    # First query: look backward to find recent data + metadata
-                    readStart = nowUs - (60 * 1_000_000)  # Last 1 minute
+                # LIVE mode: query from cursor to now
                 readEnd = nowUs
+                gapUs = nowUs - self.currentTime
+                if gapUs < 0:
+                    self.log.warning(f"[Stream] LIVE cursor AHEAD of now by {-gapUs}us — clock skew?")
+                elif gapUs > 5_000_000:
+                    self.log.info(f"[Stream] LIVE gap={gapUs/1_000_000:.1f}s (cursor behind now)")
             else:
                 # Infinite forward (non-LIVE): read 1-second window
                 readEnd = self.currentTime + queryWindowUs
@@ -204,9 +230,6 @@ class StreamCursor:
                 # Infinite backward (REWIND): read 1-second window backward
                 readStart = self.currentTime - queryWindowUs
             actualWindowUs = readEnd - readStart
-        
-        # Mark that we've queried at least once
-        self._queriedOnce = True
         
         # Convert to ISO8601
         startTimeIso = datetime.fromtimestamp(readStart / 1_000_000, tz=timezone.utc).isoformat()
@@ -259,9 +282,10 @@ class StreamCursor:
         else:
             self.currentTime = readStart  # Move to start of query window (going backward)
         
-        # Store cursor and window size for pacing
+        # Store cursor and window for pacing + follower sync
         self.lastEmittedCursor = self.currentTime
         self.lastQueryWindowUs = actualWindowUs
+        self.lastWindow = (readStart, readEnd)  # For followers to query same window
         
         return events
     
@@ -294,12 +318,11 @@ class OutputStreamCursor:
     """
     Follower cursor for output streams (TCP/UDP/WS).
     
-    Uses the SAME windowing/pacing logic as StreamCursor, but:
-    - When BOUND: Samples leader's currentTime, queries with own filters
-    - When UNBOUND: Live-follow mode (query from now, wait for new data)
+    Event-driven architecture:
+    - When BOUND: Waits for leader's cursorAdvancedEvent, queries leader.lastWindow
+    - When UNBOUND: Live-follow mode (query from now, wait for new data notification)
     
-    This is NOT a separate streaming algorithm - it's a thin wrapper that
-    reuses the leader's timeline position to stay synchronized.
+    This ensures zero drift: followers always query the exact same time window as leader.
     """
     
     def __init__(self, connId: str, filters: Dict[str, Any], database: Database,
@@ -312,62 +335,30 @@ class OutputStreamCursor:
         self.log = getLogger()
         
         self.running = True
-        self.newDataEvent = asyncio.Event()  # For LIVE wake on ingest
+        self.newDataEvent = asyncio.Event()  # For LIVE/unbound wake on ingest
+        self.followerCursor = None  # Track where follower last read (prevents data loss)
         
         # Convert string lanes to Lane enums if present
         self.lanes = None
         if filters.get('lanes'):
             self.lanes = [Lane(l) if isinstance(l, str) else l for l in filters['lanes']]
-        
-        # Track last query position to avoid re-querying same window
-        self.lastQueryUs: Optional[int] = None
     
     async def streamChunks(self, chunkQueue: asyncio.Queue):
         """
         Stream chunks following leader timeline (bound) or live (unbound).
         
-        Uses same windowing logic as StreamCursor, but samples leader position.
+        Event-driven: waits for leader signal, queries same window, emits.
         """
         self.log.info(f"[OutputCursor] Started: conn={self.connId}, "
                      f"leader={self.leaderConnId or 'LIVE'}, filters={self.filters}")
         
         try:
-            while self.running:
-                # Get timeline position (from leader or live)
-                queryStart, queryEnd = await self._getQueryWindow()
-                
-                if queryStart is None:
-                    # No data to query yet (paused or waiting)
-                    await asyncio.sleep(0.02)
-                    continue
-                
-                # Skip if we already queried this window
-                if self.lastQueryUs == queryStart:
-                    await asyncio.sleep(0.02)
-                    continue
-                
-                # Query with own filters at leader's time position
-                events = await self._queryEvents(queryStart, queryEnd)
-                self.lastQueryUs = queryStart
-                
-                if events:
-                    chunk = StreamChunk(
-                        playbackRequestId=self.connId,
-                        events=events,
-                        timestamp=queryEnd,
-                        complete=False
-                    )
-                    await chunkQueue.put(chunk)
-                elif not self.leaderConnId:
-                    # LIVE unbound: wait for new data notification
-                    try:
-                        await asyncio.wait_for(self.newDataEvent.wait(), timeout=0.1)
-                        self.newDataEvent.clear()
-                    except asyncio.TimeoutError:
-                        pass
-                
-                # Small delay to prevent busy-wait
-                await asyncio.sleep(0.02)
+            if self.leaderConnId and self.streamingManager:
+                # BOUND mode: wait for leader events
+                await self._streamBound(chunkQueue)
+            else:
+                # UNBOUND mode: live-follow
+                await self._streamUnbound(chunkQueue)
                 
         except asyncio.CancelledError:
             self.log.info(f"[OutputCursor] Canceled: conn={self.connId}")
@@ -376,38 +367,100 @@ class OutputStreamCursor:
             self.log.error(f"[OutputCursor] Error: {e}", exc_info=True)
             raise
     
-    async def _getQueryWindow(self) -> tuple:
+    async def _streamBound(self, chunkQueue: asyncio.Queue):
         """
-        Get query window based on binding mode.
+        Bound streaming: follower tracks own cursor, catches up to leader.
         
-        Returns (startUs, endUs) or (None, None) if paused/waiting.
+        Uses leader.lastEmittedCursor as target, queries [followerCursor, leaderCursor]
+        to catch ALL events in own lane. asyncio.Event may coalesce multiple leader
+        advances — querying the full gap ensures zero data loss.
         """
-        if self.leaderConnId and self.streamingManager:
-            # BOUND mode: follow leader's timeline position
+        followerCursor = None  # Set on first leader signal
+        
+        while self.running:
             leader = self.streamingManager.getLeaderCursor(self.leaderConnId)
             if not leader:
-                # Leader gone (disconnected?) - stop
+                self.log.info(f"[OutputCursor] Leader disconnected, stopping")
                 self.running = False
-                return (None, None)
+                break
             
-            # Check if paused (rate=0)
-            if leader.rate == 0:
-                return (None, None)
+            # Wait for leader to advance cursor
+            try:
+                await asyncio.wait_for(leader.cursorAdvancedEvent.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
             
-            # Check if leader is in LIVE mode (currentTime=None)
-            if leader.currentTime is None:
-                # Leader in LIVE mode - we follow LIVE too
-                nowUs = int(datetime.now(timezone.utc).timestamp() * 1_000_000)
-                return (nowUs - 1_000_000, nowUs)  # Last 1 second
+            leader.cursorAdvancedEvent.clear()
             
-            # Follow leader's cursor position (500ms window around it)
-            windowUs = 500_000  # 500ms window
-            return (leader.currentTime - windowUs, leader.currentTime + windowUs)
+            leaderCursor = leader.lastEmittedCursor
+            if leaderCursor is None:
+                continue
+            
+            # Initialize follower cursor on first signal
+            if followerCursor is None:
+                followerCursor = leaderCursor
+                continue
+            
+            # Query from follower's last position to leader's current position
+            # This catches the FULL range regardless of coalesced signals
+            if leader.rate >= 0:
+                readStart, readEnd = followerCursor, leaderCursor
+            else:
+                readStart, readEnd = leaderCursor, followerCursor
+            
+            if readStart >= readEnd:
+                followerCursor = leaderCursor
+                continue
+            
+            events = await self._queryEvents(readStart, readEnd)
+            followerCursor = leaderCursor
+            
+            if events:
+                if leader.rate < 0:
+                    events = events[::-1]
+                chunk = StreamChunk(
+                    playbackRequestId=self.connId,
+                    events=events,
+                    timestamp=leaderCursor,
+                    complete=False
+                )
+                await chunkQueue.put(chunk)
+    
+    async def _streamUnbound(self, chunkQueue: asyncio.Queue):
+        """
+        Unbound streaming: live-follow mode, start from now and stream forward.
         
-        else:
-            # UNBOUND mode: live-follow (query recent data)
+        Streams from NOW forward, advancing cursor with each query window.
+        """
+        # Start cursor at NOW (no lookback for non-UI streams)
+        cursorUs = int(datetime.now(timezone.utc).timestamp() * 1_000_000)
+        
+        while self.running:
             nowUs = int(datetime.now(timezone.utc).timestamp() * 1_000_000)
-            return (nowUs - 1_000_000, nowUs)  # Last 1 second
+            
+            # Query from cursor forward to now
+            readStart = cursorUs
+            readEnd = nowUs
+            
+            events = await self._queryEvents(readStart, readEnd)
+            
+            if events:
+                chunk = StreamChunk(
+                    playbackRequestId=self.connId,
+                    events=events,
+                    timestamp=readEnd,
+                    complete=False
+                )
+                await chunkQueue.put(chunk)
+                cursorUs = readEnd  # Advance cursor
+            else:
+                # No data yet - advance cursor to now and wait for new data
+                cursorUs = nowUs
+                try:
+                    await asyncio.wait_for(self.newDataEvent.wait(), timeout=1.0)
+                    self.newDataEvent.clear()
+                except asyncio.TimeoutError:
+                    pass
     
     async def _queryEvents(self, startUs: int, endUs: int) -> List[Dict[str, Any]]:
         """Query events with own filters in given time window"""
@@ -472,10 +525,15 @@ class StreamingManager:
         Wakes up LIVE cursors (stopTime=None) to push new data immediately.
         """
         # Wake up all LIVE streams (non-blocking, just set event flags)
+        liveCount = 0
         for clientConnId, cursor in self.activeStreams.items():
             if cursor.stopTime is None:  # LIVE mode only
                 if hasattr(cursor, 'newDataEvent'):
                     cursor.newDataEvent.set()  # Wake up cursor to read new data
+                    liveCount += 1
+        
+        if liveCount > 0:
+            self.log.debug(f"[StreamMgr] Notified {liveCount} LIVE cursor(s) at {canonicalTruthTime}")
         
         # Wake up unbound output streams (live-follow mode)
         for connId, cursor in self.outputStreams.items():

@@ -1,0 +1,125 @@
+CLOCK FIX
+
+
+NOTE:
+Client “must not free-run a clock”: The architecture explicitly says the client may interpolate cosmetically but must correct to server truth on each chunk and not free-run as authoritative time. 
+
+phase9Summary
+
+
+The summary doesn’t mention this aspect at all; your observed “dead clock” suggests the UI clock is currently event-driven and not ticking between chunks. That’s not an architecture violation by itself, but if you “fix” it by injecting fake truth events, that would violate the architecture’s single-truth / determinism spirit. (So: fix should be UI-only extrapolation, not truth injection.)
+
+
+
+Got it: the clock is “recommended time” = a function of the replay magnitude + sign, and you like that it’s data-driven because it avoids resync headaches — but you want it to advance even when no events arrive.
+
+You can keep the simplicity and fix the dead-clock by making the clock predictive between truth updates, without turning “ticks” into truth.
+
+The right model: truth-anchored, locally integrated clock
+
+Treat incoming data/events as sync points (anchors), and between them compute time as:
+
+recommended_time(t) = anchor_time + (now_wall - anchor_wall) × rate
+
+Where:
+
+anchor_time = recommended time at last sync (from truth / replay controller)
+
+anchor_wall = wall-clock timestamp when that anchor was set (Date.now())
+
+rate = magnitude × sign (e.g., +1.0 normal forward, -2.0 reverse 2x)
+
+This ticks smoothly even with zero incoming data, but the moment new truth arrives you re-anchor and you’re back to fully data-driven.
+
+Why this preserves your “no constant resync” goal
+
+You’re not trying to keep two systems in lockstep continuously.
+You’re doing: sync only when data arrives, and otherwise you just extrapolate from the last authoritative state.
+
+What must be “truth” vs “ephemeral”
+
+Truth / authoritative input: the last anchor_time (recommended time), plus current rate (magnitude/sign).
+
+Ephemeral: the live ticking display computed from wall time since the last anchor.
+
+Never emit fake timeline events just to move the clock.
+
+Handling replay controls cleanly
+
+When magnitude/sign changes, that’s a new anchor moment:
+
+Compute current displayed recommended time using old rate
+
+Set anchor_time = that_value
+
+Set anchor_wall = now
+
+Update rate to new magnitude×sign
+
+This guarantees zero jump when the user changes speed/direction.
+
+Handling new data arrival (sync points)
+
+When a truth event arrives with a recommended time T_event:
+
+Set anchor_time = T_event
+
+Set anchor_wall = now
+
+Keep rate as currently configured (unless the event also changes it)
+
+If your system currently derives recommended time only from event timestamps, the event can simply carry the computed recommended time (or you compute it once on ingest).
+
+Drift and correction (important)
+
+Because you’re integrating from wall time, you’ll get tiny drift depending on timers. That’s OK because:
+
+You re-anchor on events
+
+You can cap correction to avoid visible jumps if an event comes late
+
+Two good options:
+
+A) Snap on anchor (simplest)
+
+When new truth arrives, just re-anchor immediately (may jump slightly).
+
+B) Slew correction (nicer UX)
+
+If the delta between current display and new anchor is small (say <200ms), snap.
+
+If larger, blend over ~250–500ms so it eases into the correct time.
+
+What about “rate depends on pending rate”?
+
+You generally don’t need that. The rate should be exactly magnitude×sign.
+But you can choose the tick frequency based on rate:
+
+If |rate| <= 1: update every 250–1000ms
+
+If |rate| > 1 or you animate a playhead: use requestAnimationFrame
+
+Still: the computed value uses the formula above.
+
+Key UX improvement so it doesn’t “lie”
+
+Because your clock is recommended time, not “truth time,” users should understand what it’s doing:
+
+Show a subtle indicator like “REC” or “Replay Time”
+
+Optionally show “Last sync: 12.3s ago” when data is idle
+
+Minimal implementation shape
+
+RecommendedTimeClock holds {anchor_time, anchor_wall, rate}
+
+getNow() returns anchor_time + (Date.now() - anchor_wall) * rate
+
+onTruthSync(T_event) → re-anchor
+
+onRateChange(newRate) → re-anchor to current then update rate
+
+UI updates off setInterval or requestAnimationFrame (ephemeral only)
+
+One detail I’d lock down (you can answer in one sentence):
+When paused (magnitude = 0), should recommended time freeze completely (likely yes), or should it still creep using wall time?

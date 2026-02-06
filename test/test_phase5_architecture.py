@@ -17,18 +17,32 @@ import time
 import sqlite3
 import pytest
 
+BASE_URL = "http://localhost:80"
+WS_URL = "ws://localhost:80/ws"
+ADMIN_USER = os.getenv("NOVA_ADMIN_USER", "admin")
+ADMIN_PASS = os.getenv("NOVA_ADMIN_PASS", "admin123")
+
+
+async def login(session: aiohttp.ClientSession) -> None:
+    resp = await session.post(
+        f"{BASE_URL}/auth/login",
+        json={"username": ADMIN_USER, "password": ADMIN_PASS}
+    )
+    if resp.status != 200:
+        raise RuntimeError(f"Login failed: {resp.status} {await resp.text()}")
+
 
 @pytest.mark.asyncio
 async def testDispatch():
     """Test command dispatch (mandatory: ACK + DB record)"""
     print("\n=== Command Dispatch Test ===\n")
     
-    url = "ws://localhost:80/ws"
     async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(url) as ws:
-            # Auth
-            await ws.send_json({"type": "auth", "token": None})
-            await ws.receive_json()
+        await login(session)
+        async with session.ws_connect(WS_URL) as ws:
+            msg = await ws.receive_json()
+            if not msg.get('success'):
+                raise RuntimeError(f"WS auth failed: {msg}")
             print("[PASS] Authenticated")
             
             # Start LIVE stream
@@ -122,11 +136,12 @@ async def testIdempotency():
     """Test command idempotency"""
     print("\n=== Idempotency Test ===\n")
     
-    url = "ws://localhost:80/ws"
     async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(url) as ws:
-            await ws.send_json({"type": "auth", "token": None})
-            await ws.receive_json()
+        await login(session)
+        async with session.ws_connect(WS_URL) as ws:
+            msg = await ws.receive_json()
+            if not msg.get('success'):
+                raise RuntimeError(f"WS auth failed: {msg}")
             
             commandId = f"cmd_idemp_{int(time.time()*1000)}"
             requestId = "req_idemp_fixed"
@@ -169,11 +184,12 @@ async def testReplayBlocking():
     """Test REPLAY mode blocking"""
     print("\n=== REPLAY Blocking Test ===\n")
     
-    url = "ws://localhost:80/ws"
     async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(url) as ws:
-            await ws.send_json({"type": "auth", "token": None})
-            await ws.receive_json()
+        await login(session)
+        async with session.ws_connect(WS_URL) as ws:
+            msg = await ws.receive_json()
+            if not msg.get('success'):
+                raise RuntimeError(f"WS auth failed: {msg}")
             
             # Start REPLAY stream
             await ws.send_json({

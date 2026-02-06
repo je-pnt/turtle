@@ -108,8 +108,6 @@ class CoreIPCHandler:
                     await self._handleStartStream(request)
                 elif requestType == RequestType.CANCEL_STREAM.value:
                     await self._handleCancelStream(request)
-                elif requestType == 'setPlaybackRate':
-                    await self._handleSetPlaybackRate(request)
                 elif requestType == RequestType.SUBMIT_COMMAND.value:
                     await self._handleCommand(request)
                 elif requestType == RequestType.EXPORT.value:
@@ -257,25 +255,6 @@ class CoreIPCHandler:
         except Exception as e:
             self.log.error(f"[CoreIPC] CancelStream error: {e}", exc_info=True)
             await self._sendError(request.get('requestId'), str(e))
-    
-    async def _handleSetPlaybackRate(self, request: Dict[str, Any]):
-        """Handle setPlaybackRate request - change rate without restarting"""
-        try:
-            clientConnId = request['clientConnId']
-            rate = request['rate']
-            
-            self.log.info(f"[CoreIPC] SetPlaybackRate: conn={clientConnId}, rate={rate}")
-            
-            # Update cursor rate if stream exists
-            cursor = self.streamingManager.activeStreams.get(clientConnId)
-            if cursor:
-                cursor.rate = rate
-                self.log.info(f"[CoreIPC] Updated cursor rate: conn={clientConnId}, rate={rate}")
-            else:
-                self.log.warning(f"[CoreIPC] No active cursor for conn={clientConnId}")
-            
-        except Exception as e:
-            self.log.error(f"[CoreIPC] SetPlaybackRate error: {e}", exc_info=True)
     
     async def _handleCommand(self, request: Dict[str, Any]):
         """Handle CommandRequest with full lifecycle"""
