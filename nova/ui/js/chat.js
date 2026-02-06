@@ -99,7 +99,8 @@ const NovaChat = (function() {
             _timeMode = e.detail.mode;
             
             if (_timeMode === 'replay') {
-                _replayCursor = e.detail.cursor;
+                // Convert microseconds (timeline) to milliseconds (chat timestamps)
+                _replayCursor = e.detail.cursor / 1000;
                 // Show follow toggle in replay mode
                 if (_followToggle) _followToggle.style.display = '';
                 // Disable input in replay
@@ -118,7 +119,8 @@ const NovaChat = (function() {
         // Listen for time updates (for replay filtering and highlighting)
         window.addEventListener('nova:timeUpdate', (e) => {
             if (_timeMode === 'replay') {
-                _replayCursor = e.detail.time;
+                // Convert microseconds (timeline) to milliseconds (chat timestamps)
+                _replayCursor = e.detail.time / 1000;
                 renderMessages();
             }
         });
@@ -415,34 +417,31 @@ const NovaChat = (function() {
     /**
      * Render messages for current channel
      * 
-     * In replay mode:
-     * - Only show messages with timestamp <= replayCursor
-     * - Highlight the "current" message (closest to cursor)
-     * - Autoscroll if follow mode is enabled
+     * All messages are always visible. In replay mode:
+     * - Highlight the "current" message (closest to cursor without exceeding)
+     * - Auto-scroll to current if _followMode is on
+     * Live mode scrolls to bottom unless user scrolled away.
      */
     function renderMessages() {
         const channelMessages = _messages[_currentChannel] || [];
         
-        // Filter for replay mode
-        let displayMessages = channelMessages;
+        // Always show all messages — never filter/delete
         let currentMsgIndex = -1;
         
         if (_timeMode === 'replay' && _replayCursor) {
-            displayMessages = channelMessages.filter(m => m.timestamp <= _replayCursor);
-            
-            // Find the "current" message (closest to cursor without exceeding)
-            if (displayMessages.length > 0) {
-                // Last message that's <= cursor is the "current" one
-                currentMsgIndex = displayMessages.length - 1;
-                _currentMessageId = displayMessages[currentMsgIndex].messageId;
-            } else {
-                _currentMessageId = null;
+            // Binary-search-style: find last message with timestamp <= cursor
+            for (let i = channelMessages.length - 1; i >= 0; i--) {
+                if (channelMessages[i].timestamp <= _replayCursor) {
+                    currentMsgIndex = i;
+                    break;
+                }
             }
+            _currentMessageId = currentMsgIndex >= 0 ? channelMessages[currentMsgIndex].messageId : null;
         } else {
             _currentMessageId = null;
         }
         
-        _messagesContainer.innerHTML = displayMessages.map((msg, index) => {
+        _messagesContainer.innerHTML = channelMessages.map((msg, index) => {
             const time = new Date(msg.timestamp).toLocaleTimeString();
             const isCurrent = (_timeMode === 'replay' && index === currentMsgIndex);
             const currentClass = isCurrent ? ' current' : '';
@@ -457,15 +456,16 @@ const NovaChat = (function() {
         
         // Scroll behavior
         if (_timeMode === 'replay' && _followMode && currentMsgIndex >= 0) {
-            // In replay follow mode, scroll to current message
+            // In replay follow mode, scroll to current (closest) message
             const currentEl = _messagesContainer.querySelector('.chat-message.current');
             if (currentEl) {
                 currentEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }
-        } else {
-            // In live mode or non-follow, scroll to bottom
+        } else if (_timeMode !== 'replay' && _followMode) {
+            // Live mode with follow: scroll to bottom
             _messagesContainer.scrollTop = _messagesContainer.scrollHeight;
         }
+        // If follow mode is off, don't auto-scroll at all
     }
     
     /**

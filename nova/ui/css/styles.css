@@ -304,6 +304,10 @@ button:disabled {
     color: var(--text-muted);
 }
 
+.time-mode.stalled {
+    color: #ff9800;
+}
+
 .clamp-indicator {
     font-size: 0.75rem;
     color: #9c27b0;

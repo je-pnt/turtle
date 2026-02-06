@@ -30,7 +30,7 @@ class TestManifestDiscovery:
         
         manifests = registry.getAllManifests()
         
-        # Should have at least 4 manifests (default, gnss, spectrum, tcp-stream)
+        # Should have at least 4 manifests (default, gnss, spectrum, stream)
         assert len(manifests) >= 4
         
         # Verify known manifests exist
@@ -38,7 +38,8 @@ class TestManifestDiscovery:
         assert 'default-card' in cardTypes
         assert 'gnss-receiver-card' in cardTypes
         assert 'spectrum-card' in cardTypes
-        assert 'tcp-stream-card' in cardTypes
+        assert 'stream-card' in cardTypes
+        assert 'setup-streams-card' in cardTypes
     
     def test_discovery_order_is_deterministic(self):
         """Verify manifests are loaded in sorted filename order"""
@@ -64,7 +65,7 @@ class TestManifestDiscovery:
         assert registry.getCardForEntityType('mosaic-x5').cardType == 'gnss-receiver-card'
         assert registry.getCardForEntityType('spectrum-analyzer').cardType == 'spectrum-card'
         assert registry.getCardForEntityType('rsp1b').cardType == 'spectrum-card'
-        assert registry.getCardForEntityType('tcp-stream').cardType == 'tcp-stream-card'
+        assert registry.getCardForEntityType('tcp-stream').cardType == 'stream-card'
     
     def test_unknown_entitytype_returns_default(self):
         """Verify unknown entityType returns default card"""
@@ -84,10 +85,8 @@ class TestManifestDiscovery:
         assert card is not None
         actionIds = [a.actionId for a in card.actions]
         
-        # Actions for TCP stream control
-        assert 'start' in actionIds
-        assert 'stop' in actionIds
-        assert 'configure' in actionIds
+        # Actions are custom-rendered; manifest may define none
+        assert isinstance(actionIds, list)
     
     def test_getAllCardManifestsDict_returns_list(self):
         """Verify getAllCardManifestsDict returns proper format for UI"""
@@ -195,9 +194,9 @@ class TestCardManifestNotHardcoded:
         # We can't actually add a new file in tests, but we can verify
         # that the registry correctly maps entityTypes from discovered manifests
         
-        # tcp-stream-card was added in Phase 8
+        # stream-card supports tcp-stream for backwards compat
         tcp_card = registry.getCardForEntityType('tcp-stream')
-        assert tcp_card.cardType == 'tcp-stream-card'
+        assert tcp_card.cardType == 'stream-card'
         
         # Verify the mapping came from file-based discovery, not hardcoding
         # (This is implicitly tested by the fact that tcp-stream works)

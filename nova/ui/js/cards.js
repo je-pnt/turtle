@@ -1293,10 +1293,18 @@ function editCardName(entityKey) {
                     });
                     if (response.ok) {
                         console.log('[Cards] Name saved:', newName);
+                        // Update shield entity in-memory so it persists across re-renders
+                        var shieldEntity = window.shields?.byKey?.get(entityKey);
+                        if (shieldEntity) shieldEntity.displayName = newName;
+                        // Update card uiState entity
+                        var uiData = cards.uiState.get(entityKey);
+                        if (uiData && uiData._entity) uiData._entity.displayName = newName;
                         // Update map entity name
                         if (window.NovaMap) {
                             window.NovaMap.updateEntityPresentation(entityKey, { displayName: newName });
                         }
+                        // Re-render shield sidebar to show new name immediately
+                        if (window.renderShields) window.renderShields();
                     }
                 } catch (e) {
                     console.error('[Cards] Failed to save name:', e);
@@ -2400,4 +2408,5 @@ window.setMusicOffToCursor = setMusicOffToCursor;
 window.toggleMusicTimesCollapse = toggleMusicTimesCollapse;
 window.toggleSignalTogglesCollapse = toggleSignalTogglesCollapse;
 window.showRunError = showRunError;
+window.renderAllCards = renderAllCards;
 window.cards = cards;

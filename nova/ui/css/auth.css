@@ -283,42 +283,60 @@
 
 .actions-cell {
     white-space: nowrap;
+    display: flex;
+    gap: 4px;
+    align-items: center;
 }
 
-.action-btn {
-    padding: 0.25rem 0.75rem;
-    border: none;
+/* Compact icon buttons for admin actions */
+.icon-btn {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--border, #2a2a2a);
     border-radius: 4px;
     cursor: pointer;
+    font-size: 0.9rem;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-secondary, #121212);
+    color: var(--text-primary, #e0e0e0);
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.icon-btn:hover {
+    border-color: var(--accent, #00d4ff);
+}
+
+.icon-btn.approve-btn { color: #4caf50; }
+.icon-btn.approve-btn:hover { background: #004400; }
+.icon-btn.disable-btn { color: #ff9800; }
+.icon-btn.disable-btn:hover { background: #442200; }
+.icon-btn.enable-btn { color: #2196f3; }
+.icon-btn.enable-btn:hover { background: #002244; }
+.icon-btn.pwd-btn { color: #ffc107; }
+.icon-btn.pwd-btn:hover { background: #443300; }
+.icon-btn.del-btn { color: #f44336; }
+.icon-btn.del-btn:hover { background: #440000; }
+
+/* Scope dropdown */
+.scope-select {
+    background: var(--bg-primary, #0a0a0a);
+    color: var(--text-primary, #e0e0e0);
+    border: 1px solid var(--border, #2a2a2a);
+    border-radius: 4px;
+    padding: 0.2rem 0.4rem;
     font-size: 0.85rem;
-    margin-right: 0.25rem;
+    min-width: 100px;
+    max-width: 160px;
 }
 
-.approve-btn {
-    background: #006600;
-    color: #fff;
-}
-
-.approve-btn:hover {
-    background: #008800;
-}
-
-.disable-btn {
-    background: #660000;
-    color: #fff;
-}
-
-.disable-btn:hover {
-    background: #880000;
-}
-
-.enable-btn {
-    background: #006666;
-    color: #fff;
-}
-
-.enable-btn:hover {
-    background: #008888;
+.scope-select:focus {
+    border-color: var(--accent, #00d4ff);
+    outline: none;
+    size: auto;
 }
 
 .role-selector {

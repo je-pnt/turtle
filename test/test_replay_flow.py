@@ -3,6 +3,7 @@ import asyncio
 import aiohttp
 import os
 from datetime import datetime, timezone, timedelta
+import pytest
 
 BASE_URL = "http://localhost:80"
 WS_URL = "ws://localhost:80/ws"
@@ -18,6 +19,7 @@ async def login(session: aiohttp.ClientSession) -> None:
     if resp.status != 200:
         raise RuntimeError(f"Login failed: {resp.status} {await resp.text()}")
 
+@pytest.mark.asyncio
 async def test_replay():
     async with aiohttp.ClientSession() as session:
         await login(session)
@@ -72,4 +74,5 @@ async def test_replay():
                     
             print(f'\nFinal: {totalEvents} events across lanes: {lanes}')
                     
-asyncio.run(test_replay())
+if __name__ == '__main__':
+    asyncio.run(test_replay())

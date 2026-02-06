@@ -225,6 +225,11 @@ function handleQueryResponse(msg) {
         // Route to display
         appendEvents(msg.events);
         updateStatus(`Query: ${msg.totalCount} events`, 'success');
+        
+        // After initial metadata query populates shields, apply presentation overrides
+        if (descriptors.length > 0 && window.applyPresentationOverrides) {
+            window.applyPresentationOverrides();
+        }
     } else {
         updateStatus('Query: no events found', 'info');
     }

@@ -22,6 +22,12 @@ const timeline = {
     lastDataTimeUs: null,    // Last event time we actually received (for REWIND)
     playbackRequestId: null, // Active stream fence token
     
+    // Anchor-based interpolation (Phase 2: visual advancement without data)
+    anchorTimeUs: 0,         // Server time at last data arrival (microseconds)
+    anchorWallMs: 0,         // Wall-clock when anchor was set (Date.now() ms)
+    stallWindowMs: 5000,     // Max ms without data before clamping interpolation
+    isStalled: false,        // True when no data received within stallWindow
+    
     // Time window: LHS = session start, RHS = now (real-time)
     // Linear mapping: slider 0% = windowStartUs, 100% = now
     windowStartUs: 0,        // Session start (extends if cursor goes earlier)
@@ -40,6 +46,16 @@ async function initTimeline() {
             timeline.timebase = config.defaultTimebase || 'canonical';
             timeline.rate = config.defaultRate || 1.0;
             
+            // Apply activity thresholds to entities module
+            if (window.applyActivityConfig) {
+                window.applyActivityConfig(config);
+            }
+            
+            // Apply stall window from config
+            if (config.stallWindowSeconds) {
+                timeline.stallWindowMs = config.stallWindowSeconds * 1000;
+            }
+            
             // Set UI selects to match config
             const timebaseSelect = document.getElementById('timebaseSelect');
             if (timebaseSelect) {
@@ -57,6 +73,8 @@ async function initTimeline() {
     timeline.currentTimeUs = nowUs;
     timeline.windowEndUs = nowUs;
     timeline.windowStartUs = nowUs;
+    timeline.anchorTimeUs = nowUs;
+    timeline.anchorWallMs = Date.now();
     
     // Attach event listeners
     document.getElementById('playPauseBtn').addEventListener('click', handlePlayPause);
@@ -139,13 +157,17 @@ function handlePlayPause() {
         timeline.isPlaying = false;
         timeline.currentTimeUs = Date.now() * 1000;  // Snapshot current time
         cancelStream();  // Mode switch requires restart
+        dispatchTimeMode('replay');
         updateUI();
     } else if (timeline.mode === 'REWIND') {
         // Toggle play/pause in REWIND
         timeline.isPlaying = !timeline.isPlaying;
         
         if (timeline.isPlaying) {
-            // Resume: restart stream at current position
+            // Resume: reset anchor to current position and restart stream
+            timeline.anchorTimeUs = timeline.currentTimeUs;
+            timeline.anchorWallMs = Date.now();
+            timeline.isStalled = false;
             startStream();
         } else {
             // Pause: cancel stream (architecture requires cancel+restart for any change)
@@ -161,6 +183,9 @@ function handleJumpToLive() {
     timeline.rate = 1.0;  // Reset to 1x forward
     // timebase unchanged - maintains role-based default from config
     timeline.currentTimeUs = Date.now() * 1000;
+    timeline.anchorTimeUs = timeline.currentTimeUs;
+    timeline.anchorWallMs = Date.now();
+    timeline.isStalled = false;
     
     // Exit clamp (Phase 11)
     timeline.clamp = null;
@@ -175,6 +200,7 @@ function handleJumpToLive() {
     
     // Start new stream directly (server handles implicit cancel)
     startStream();
+    dispatchTimeMode('realtime');
     updateUI();
 }
 
@@ -194,8 +220,14 @@ function handleSpeedChange(event) {
         if (timeline.lastDataTimeUs) {
             timeline.currentTimeUs = timeline.lastDataTimeUs;
         }
+        dispatchTimeMode('replay');
         // Window stays: startUs = session start, endUs = now
     }
+    
+    // Re-anchor at current position with new rate (prevents jump)
+    timeline.anchorTimeUs = timeline.currentTimeUs;
+    timeline.anchorWallMs = Date.now();
+    timeline.isStalled = false;
     
     if (timeline.isPlaying) {
         // Start new stream (server handles implicit cancel)
@@ -253,6 +285,9 @@ function handleSliderDrag(event) {
 function seekToTime(targetTimeUs) {
     timeline.mode = 'REWIND';
     timeline.currentTimeUs = targetTimeUs;
+    timeline.anchorTimeUs = targetTimeUs;
+    timeline.anchorWallMs = Date.now();
+    timeline.isStalled = false;
     
     // Extend windowStartUs if seeking before current start
     if (targetTimeUs < timeline.windowStartUs) {
@@ -269,20 +304,41 @@ function updateDisplay() {
     // RHS of timeline is always real-time now
     timeline.windowEndUs = Date.now() * 1000;
     
-    if (timeline.mode === 'LIVE' && timeline.isPlaying) {
-        // In LIVE mode, cursor = now (right edge)
-        if (timeline.lastDataTimeUs) {
-            timeline.currentTimeUs = timeline.lastDataTimeUs;
+    // Connection/session truth clamp: only advance if connected and playing
+    const wsConnected = window.wsState?.connected && window.wsState?.ws?.readyState === WebSocket.OPEN;
+    
+    if (timeline.isPlaying && wsConnected) {
+        const nowMs = Date.now();
+        const msSinceAnchor = nowMs - timeline.anchorWallMs;
+        
+        // Stall detection: if no data for stallWindowMs, clamp to anchor
+        if (msSinceAnchor > timeline.stallWindowMs && timeline.anchorTimeUs > 0) {
+            if (!timeline.isStalled) {
+                timeline.isStalled = true;
+                console.log('[Timeline] Stalled — no data for', timeline.stallWindowMs, 'ms');
+            }
+            // Clamped: don't interpolate past anchor
+            timeline.currentTimeUs = timeline.anchorTimeUs;
         } else {
-            timeline.currentTimeUs = timeline.windowEndUs;
+            timeline.isStalled = false;
+            
+            if (timeline.mode === 'LIVE') {
+                // LIVE: interpolate forward from anchor at rate=1
+                // displayTime = anchorTime + (wallClock - anchorWall) * 1000 (ms→us)
+                timeline.currentTimeUs = timeline.anchorTimeUs + (msSinceAnchor * 1000);
+            } else if (timeline.mode === 'REWIND') {
+                // REWIND: interpolate from anchor at current rate
+                // displayTime = anchorTime + (wallClock - anchorWall) * rate * 1000
+                timeline.currentTimeUs = timeline.anchorTimeUs + (msSinceAnchor * timeline.rate * 1000);
+            }
         }
-    } else if (timeline.mode === 'REWIND' && timeline.isPlaying) {
-        // Server-driven cursor: updated by appendEvents from chunk metadata
+        
         // Extend windowStartUs if cursor rewinds past it
         if (timeline.currentTimeUs < timeline.windowStartUs) {
             timeline.windowStartUs = timeline.currentTimeUs;
         }
     }
+    // When paused or disconnected: display stays frozen at currentTimeUs
     
     // Update time display (UTC)
     const date = new Date(timeline.currentTimeUs / 1000);
@@ -308,12 +364,17 @@ function updateDisplay() {
     // Update mode indicator
     const modeEl = document.getElementById('timeMode');
     if (timeline.mode === 'LIVE') {
-        modeEl.textContent = 'LIVE';
+        modeEl.textContent = timeline.isStalled ? 'STALLED' : 'LIVE';
         modeEl.classList.remove('paused');
+        modeEl.classList.toggle('stalled', timeline.isStalled);
     } else {
-        modeEl.textContent = timeline.isPlaying ? 'REWIND' : 'PAUSED';
+        modeEl.textContent = timeline.isPlaying ? (timeline.isStalled ? 'STALLED' : 'REWIND') : 'PAUSED';
         modeEl.classList.toggle('paused', !timeline.isPlaying);
+        modeEl.classList.toggle('stalled', timeline.isStalled && timeline.isPlaying);
     }
+    
+    // Dispatch time update for chat cursor tracking (Phase 2)
+    window.dispatchEvent(new CustomEvent('nova:timeUpdate', { detail: { time: timeline.currentTimeUs } }));
     
     // Update clamp indicator (Phase 11)
     const clampIndicator = document.getElementById('clampIndicator');
@@ -439,6 +500,16 @@ function cancelStream() {
     
     window.sendWebSocketMessage(request);
     timeline.playbackRequestId = null;
+}
+
+/**
+ * Dispatch timeline mode change event for chat and other listeners.
+ * @param {string} mode - 'realtime' or 'replay'
+ */
+function dispatchTimeMode(mode) {
+    window.dispatchEvent(new CustomEvent('nova:timeMode', { 
+        detail: { mode: mode, cursor: timeline.currentTimeUs } 
+    }));
 }
 
 /**

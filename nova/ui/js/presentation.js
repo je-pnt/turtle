@@ -229,6 +229,11 @@
     function gatherFormValues() {
         const overrides = {};
         
+        // Preserve existing displayName if set (don't overwrite from presentation editor)
+        if (currentPresentation.displayName) {
+            overrides.displayName = currentPresentation.displayName;
+        }
+        
         const colorHex = document.getElementById('presColor').value;
         overrides.color = hexToRgb(colorHex);
         

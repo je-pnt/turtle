@@ -34,6 +34,9 @@
     "defaultMode": "live",
     "maxDisplayEvents": 1000,
     "checkpointIntervalSeconds": 500,
-    "historyTimeoutSeconds": 120
+    "historyTimeoutSeconds": 120,
+    "onlineWindowSeconds": 5,
+    "cleanupWindowSeconds": 120,
+    "stallWindowSeconds": 5
   }
 }

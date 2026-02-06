@@ -209,13 +209,35 @@ async function createStream() {
 }
 
 async function startOutputStream(streamId) {
-    await fetch('/api/streams/' + streamId + '/start', { method: 'POST' });
+    try {
+        var response = await fetch('/api/streams/' + streamId + '/start', { method: 'POST' });
+        var result = await response.json();
+        if (!response.ok) {
+            alert('Start failed: ' + (result.error || 'Unknown error'));
+            return;
+        }
+    } catch (e) {
+        alert('Start failed: ' + e.message);
+        return;
+    }
     await loadStreams();
+    refreshStreamCard(streamId);
 }
 
 async function stopOutputStream(streamId) {
-    await fetch('/api/streams/' + streamId + '/stop', { method: 'POST' });
+    try {
+        var response = await fetch('/api/streams/' + streamId + '/stop', { method: 'POST' });
+        var result = await response.json();
+        if (!response.ok) {
+            alert('Stop failed: ' + (result.error || 'Unknown error'));
+            return;
+        }
+    } catch (e) {
+        alert('Stop failed: ' + e.message);
+        return;
+    }
     await loadStreams();
+    refreshStreamCard(streamId);
 }
 
 async function deleteStream(streamId) {
@@ -233,11 +255,35 @@ async function bindStream(streamId) {
         body: JSON.stringify({ instanceId: instanceId })
     });
     await loadStreams();
+    refreshStreamCard(streamId);
 }
 
 async function unbindStream(streamId) {
     await fetch('/api/streams/' + streamId + '/unbind', { method: 'POST' });
     await loadStreams();
+    refreshStreamCard(streamId);
+}
+
+/**
+ * Re-render an open stream card with updated definition data.
+ * After bind/unbind/start/stop, the card needs fresh data from streams.definitions.
+ */
+function refreshStreamCard(streamId) {
+    var stream = streams.definitions.get(streamId);
+    if (!stream) return;
+    var entityKey = 'stream|streams|' + streamId;
+    var uiData = window.cards?.uiState?.get(entityKey);
+    if (uiData) {
+        // Update entity reference with fresh stream data
+        uiData._entity = Object.assign({}, uiData._entity, stream, {
+            systemId: 'stream',
+            containerId: 'streams',
+            uniqueId: streamId,
+            displayName: stream.name,
+            entityType: 'stream'
+        });
+        if (window.renderAllCards) window.renderAllCards();
+    }
 }
 
 function showStreamError(msg) {

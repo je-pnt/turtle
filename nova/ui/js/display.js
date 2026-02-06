@@ -56,10 +56,14 @@ function appendEvents(events) {
             window.dispatchEvent(new CustomEvent('nova:metadataEvent', { detail: event }));
         }
         
-        // Server-authoritative cursor (anti-drift)
+        // Server-authoritative cursor (anti-drift) + anchor reset for interpolation
         if (window.timeline && event._serverCursor) {
             const oldCursor = window.timeline.currentTimeUs;
             window.timeline.currentTimeUs = event._serverCursor;
+            // Reset anchor for interpolation (Phase 2: visual advancement)
+            window.timeline.anchorTimeUs = event._serverCursor;
+            window.timeline.anchorWallMs = Date.now();
+            window.timeline.isStalled = false;
             // Log significant cursor jumps (> 5 seconds)
             if (oldCursor && Math.abs(event._serverCursor - oldCursor) > 5_000_000) {
                 console.log('[Display] Cursor jump:', 
@@ -72,12 +76,20 @@ function appendEvents(events) {
             }
         }
         
-        // Track last data time for LIVE mode
+        // Track last data time for LIVE mode + anchor
         const timeStr = event.canonicalTruthTime || event.sourceTruthTime;
         if (timeStr && window.timeline) {
             try {
                 const dt = new Date(timeStr);
-                window.timeline.lastDataTimeUs = dt.getTime() * 1000;
+                const timeUs = dt.getTime() * 1000;
+                window.timeline.lastDataTimeUs = timeUs;
+                
+                // Reset anchor on data if no _serverCursor already did it
+                if (!event._serverCursor) {
+                    window.timeline.anchorTimeUs = timeUs;
+                    window.timeline.anchorWallMs = Date.now();
+                    window.timeline.isStalled = false;
+                }
                 
                 if (window.timeline.mode === 'LIVE') {
                     window.timeline.currentTimeUs = window.timeline.lastDataTimeUs;

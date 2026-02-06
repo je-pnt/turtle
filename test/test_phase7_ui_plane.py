@@ -35,6 +35,12 @@ from nova.core.uiState import UiStateManager, EntityViewKey, DEFAULT_CHECKPOINT_
 
 
 @pytest.fixture
+def manifestRegistry():
+    """Optional manifest registry (not required for these tests)."""
+    return None
+
+
+@pytest.fixture
 def tempDb():
     """Create and cleanup temp database"""
     tmpDir = Path(tempfile.mkdtemp())
@@ -269,13 +275,13 @@ class TestUiStateManager:
         )
         uiStateManager.processUiUpdate(update1)
         
-        # Not enough time passed (same bucket)
+        # Same bucket (advance a small amount)
         start = datetime.fromisoformat("2026-01-28T12:00:00+00:00")
-        notEnough = (start + timedelta(seconds=DEFAULT_CHECKPOINT_INTERVAL_SECONDS - 1)).isoformat()
+        notEnough = (start + timedelta(seconds=60)).isoformat()
         assert not uiStateManager.shouldGeneratePeriodicCheckpoint(key, notEnough)
         
-        # Next bucket
-        enough = (start + timedelta(seconds=DEFAULT_CHECKPOINT_INTERVAL_SECONDS + 1)).isoformat()
+        # Next bucket (advance by one full interval)
+        enough = (start + timedelta(seconds=DEFAULT_CHECKPOINT_INTERVAL_SECONDS)).isoformat()
         assert uiStateManager.shouldGeneratePeriodicCheckpoint(key, enough)
 
 

@@ -277,6 +277,9 @@ class NovaServer:
             'defaultTimebase': defaultTimebase,
             'defaultRate': self.config.get('ui', {}).get('defaultRate', 1.0),
             'defaultMode': self.config.get('ui', {}).get('defaultMode', 'live'),
+            'onlineWindowSeconds': self.config.get('ui', {}).get('onlineWindowSeconds', 5),
+            'cleanupWindowSeconds': self.config.get('ui', {}).get('cleanupWindowSeconds', 120),
+            'stallWindowSeconds': self.config.get('ui', {}).get('stallWindowSeconds', 5),
             'authEnabled': self.authManager.enabled,
             'cardManifests': getAllCardManifestsDict(),
             'runManifests': runManifestRegistry.toConfigDict()
