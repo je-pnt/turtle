@@ -69,6 +69,18 @@
                 
                 console.log('[Login] Success:', data.username);
                 
+                // Verify cookie was actually set before redirecting
+                // This avoids a race where the redirect fires before the cookie is committed
+                try {
+                    const verify = await fetch('/auth/me', { credentials: 'same-origin' });
+                    if (!verify.ok) {
+                        console.warn('[Login] Cookie verification failed, retrying...');
+                        await new Promise(r => setTimeout(r, 200));
+                    }
+                } catch (e) {
+                    // Best effort — proceed with redirect anyway
+                }
+                
                 redirectAfterLogin();
                 
             } catch (err) {

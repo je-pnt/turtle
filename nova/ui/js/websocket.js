@@ -240,8 +240,10 @@ function handleQueryResponse(msg) {
  * Check fencing, then route to display
  */
 function handleStreamChunk(msg) {
-    // Fencing: ignore stale chunks
-    if (window.timeline && msg.playbackRequestId !== window.timeline.playbackRequestId) {
+    // Fencing: ignore stale chunks from a previous stream.
+    // Allow chunks when playbackRequestId hasn't been set yet (streamStarted message in flight).
+    if (window.timeline && window.timeline.playbackRequestId
+        && msg.playbackRequestId !== window.timeline.playbackRequestId) {
         console.warn('[WS] Stale chunk ignored (playbackId mismatch)');
         return;
     }

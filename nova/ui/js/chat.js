@@ -167,33 +167,35 @@ const NovaChat = (function() {
     }
     
     /**
-     * Detect user manual scroll to disable follow mode (Phase 9 requirement)
-     * Auto-scroll stops after user manually scrolls.
+     * Detect user manual scroll to disable follow mode.
+     * Once the user scrolls manually, follow stays off until they click ⬇.
+     * Works in both live and replay modes.
      */
     function setupScrollDetection() {
         if (!_messagesContainer) return;
         
-        let scrollTimeout = null;
-        let isAutoScrolling = false;
+        // Track programmatic scrolls so we don't confuse them with user scrolls
+        let _programmaticScroll = false;
         
-        // Mark when we're doing auto-scroll (so we don't confuse it with user scroll)
-        const originalScrollIntoView = Element.prototype.scrollIntoView;
-        Element.prototype.scrollIntoView = function(...args) {
-            if (_messagesContainer.contains(this)) {
-                isAutoScrolling = true;
-                clearTimeout(scrollTimeout);
-                scrollTimeout = setTimeout(() => { isAutoScrolling = false; }, 500);
-            }
-            return originalScrollIntoView.apply(this, args);
+        // Wrap our own scroll calls
+        window._chatAutoScroll = function(el) {
+            _programmaticScroll = true;
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            // Reset flag after smooth scroll completes (generous delay)
+            setTimeout(() => { _programmaticScroll = false; }, 600);
+        };
+        window._chatScrollToBottom = function() {
+            _programmaticScroll = true;
+            _messagesContainer.scrollTop = _messagesContainer.scrollHeight;
+            setTimeout(() => { _programmaticScroll = false; }, 600);
         };
         
         _messagesContainer.addEventListener('scroll', () => {
-            // Only disable follow on user scroll during replay
-            if (_timeMode === 'replay' && _followMode && !isAutoScrolling) {
+            if (_programmaticScroll) return;
+            // User scrolled manually — disable follow
+            if (_followMode) {
                 _followMode = false;
-                if (_followToggle) {
-                    _followToggle.classList.remove('active');
-                }
+                if (_followToggle) _followToggle.classList.remove('active');
                 console.log('[Chat] Follow mode disabled (user scrolled)');
             }
         });
@@ -458,12 +460,12 @@ const NovaChat = (function() {
         if (_timeMode === 'replay' && _followMode && currentMsgIndex >= 0) {
             // In replay follow mode, scroll to current (closest) message
             const currentEl = _messagesContainer.querySelector('.chat-message.current');
-            if (currentEl) {
-                currentEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            if (currentEl && window._chatAutoScroll) {
+                window._chatAutoScroll(currentEl);
             }
         } else if (_timeMode !== 'replay' && _followMode) {
             // Live mode with follow: scroll to bottom
-            _messagesContainer.scrollTop = _messagesContainer.scrollHeight;
+            if (window._chatScrollToBottom) window._chatScrollToBottom();
         }
         // If follow mode is off, don't auto-scroll at all
     }
@@ -515,7 +517,8 @@ const NovaChat = (function() {
                     const msgElements = _messagesContainer.querySelectorAll('.chat-message');
                     if (msgElements[msgIndex]) {
                         msgElements[msgIndex].classList.add('highlighted');
-                        msgElements[msgIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        if (window._chatAutoScroll) window._chatAutoScroll(msgElements[msgIndex]);
+                        else msgElements[msgIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
                         
                         // Remove highlight after 3 seconds
                         setTimeout(() => {

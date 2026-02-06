@@ -207,6 +207,16 @@
         const success = await savePresentation(currentEntityKey, overrides, false);
         
         if (success) {
+            // Update centralized presentation layer
+            if (window.shields && window.shields.presentation) {
+                var pres = window.shields.presentation.get(currentEntityKey) || {};
+                Object.assign(pres, overrides);
+                window.shields.presentation.set(currentEntityKey, pres);
+            }
+            // Re-render everything that reads presentation
+            if (window.renderShields) window.renderShields();
+            if (window.renderAllCards) window.renderAllCards();
+            if (window.renderStreamsList) window.renderStreamsList();
             // Apply to map immediately
             if (window.NovaMap) {
                 window.NovaMap.updateEntityPresentation(currentEntityKey, overrides);
@@ -222,6 +232,19 @@
         const success = await savePresentation(currentEntityKey, overrides, true);
         
         if (success) {
+            // Update centralized presentation layer
+            if (window.shields && window.shields.presentation) {
+                var pres = window.shields.presentation.get(currentEntityKey) || {};
+                Object.assign(pres, overrides);
+                window.shields.presentation.set(currentEntityKey, pres);
+            }
+            // Re-render everything that reads presentation
+            if (window.renderShields) window.renderShields();
+            if (window.renderAllCards) window.renderAllCards();
+            if (window.renderStreamsList) window.renderStreamsList();
+            if (window.NovaMap) {
+                window.NovaMap.updateEntityPresentation(currentEntityKey, overrides);
+            }
             closePresentationEditor();
         }
     }

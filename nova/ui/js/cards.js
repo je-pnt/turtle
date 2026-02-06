@@ -191,8 +191,9 @@ function renderCard(entity, manifest, uiData, isRewind) {
         return renderRunCard(entity, entityKey, isCollapsed);
     }
     
-    // Get fresh entity from shields for accurate lastSeen
+    // Get fresh entity from shields for accurate lastSeen, displayName from presentation layer
     const freshEntity = window.shields?.byKey?.get(entityKey) || entity;
+    const displayName = window.getDisplayName ? window.getDisplayName(entityKey) : (freshEntity.displayName || freshEntity.uniqueId);
     
     // Group widgets by section
     const positionWidgets = manifest.widgets.filter(w => w.config?.section === 'position');
@@ -202,12 +203,12 @@ function renderCard(entity, manifest, uiData, isRewind) {
     const otherWidgets = manifest.widgets.filter(w => !w.config?.section);
     
     return `
-        <div class="entity-card ${isCollapsed ? 'collapsed' : ''}" data-entity-key="${entityKey}" draggable="false" style="--card-color: ${manifest.color}">
+        <div class="entity-card ${isCollapsed ? 'collapsed' : ''}" data-entity-key="${entityKey}" draggable="false" style="--card-color: ${window.getCardColor ? window.getCardColor(entityKey, manifest.color) : manifest.color}">
             <div class="card-header" data-action="toggle-collapse" data-entity-key="${entityKey}"> 
                 <div class="card-drag-handle" data-action="drag-handle" data-entity-key="${entityKey}" title="Drag to reorder">⋮⋮</div>
                 <div class="card-header-main">
                     <div class="card-title-row">
-                        <span class="card-title" data-entity-key="${entityKey}">${freshEntity.displayName || freshEntity.uniqueId}</span>
+                        <span class="card-title" data-entity-key="${entityKey}">${displayName}</span>
                         <button type="button" class="card-edit-name-btn" data-action="edit-name" data-entity-key="${entityKey}" title="Edit display name">✏️</button>
                     </div>
                     <div class="card-identity-row">
@@ -1027,7 +1028,7 @@ let dragDropInitialized = false;
 function renderSetupStreamsCard(entity, entityKey, isCollapsed, manifest) {
     const streamIcon = '<img src="/ui/icons/stream.svg" class="card-svg-icon" alt="">';
     return `
-        <div class="entity-card ${isCollapsed ? 'collapsed' : ''}" data-entity-key="${entityKey}" style="--card-color: ${manifest.color}">
+        <div class="entity-card ${isCollapsed ? 'collapsed' : ''}" data-entity-key="${entityKey}" style="--card-color: ${window.getCardColor ? window.getCardColor(entityKey, manifest.color) : manifest.color}">
             <div class="card-header" data-action="toggle-collapse" data-entity-key="${entityKey}">
                 <div class="card-drag-handle" data-action="drag-handle" data-entity-key="${entityKey}">⋮⋮</div>
                 <div class="card-header-main">
@@ -1174,12 +1175,12 @@ function renderTcpStreamCard(entity, entityKey, isCollapsed, manifest) {
     const connLabel = stream.protocol === 'udp' ? 'Targets' : 'Conns';
     
     return `
-        <div class="entity-card ${isCollapsed ? 'collapsed' : ''}" data-entity-key="${entityKey}" style="--card-color: ${manifest.color}">
+        <div class="entity-card ${isCollapsed ? 'collapsed' : ''}" data-entity-key="${entityKey}" style="--card-color: ${window.getCardColor ? window.getCardColor(entityKey, manifest.color) : manifest.color}">
             <div class="card-header" data-action="toggle-collapse" data-entity-key="${entityKey}">
                 <div class="card-drag-handle" data-action="drag-handle" data-entity-key="${entityKey}">⋮⋮</div>
                 <div class="card-header-main">
                     <div class="card-title-row">
-                        <span class="card-title" data-entity-key="${entityKey}">${streamIcon} ${stream.name || stream.uniqueId}</span>
+                        <span class="card-title" data-entity-key="${entityKey}">${streamIcon} ${window.getDisplayName ? window.getDisplayName(entityKey) : (entity.displayName || stream.name || stream.uniqueId)}</span>
                         <button type="button" class="card-edit-name-btn" data-action="edit-name" data-entity-key="${entityKey}" title="Edit name">✏️</button>
                     </div>
                     <div class="card-identity-row">
@@ -1293,18 +1294,15 @@ function editCardName(entityKey) {
                     });
                     if (response.ok) {
                         console.log('[Cards] Name saved:', newName);
-                        // Update shield entity in-memory so it persists across re-renders
-                        var shieldEntity = window.shields?.byKey?.get(entityKey);
-                        if (shieldEntity) shieldEntity.displayName = newName;
-                        // Update card uiState entity
-                        var uiData = cards.uiState.get(entityKey);
-                        if (uiData && uiData._entity) uiData._entity.displayName = newName;
-                        // Update map entity name
-                        if (window.NovaMap) {
-                            window.NovaMap.updateEntityPresentation(entityKey, { displayName: newName });
-                        }
-                        // Re-render shield sidebar to show new name immediately
+                        // Update presentation layer — single source of truth
+                        var pres = window.shields?.presentation?.get(entityKey) || {};
+                        pres.displayName = newName;
+                        window.shields?.presentation?.set(entityKey, pres);
+                        // Re-render everything that reads presentation
                         if (window.renderShields) window.renderShields();
+                        if (window.renderAllCards) window.renderAllCards();
+                        if (window.renderStreamsList) window.renderStreamsList();
+                        if (window.NovaMap) window.NovaMap.updateEntityPresentation(entityKey, { displayName: newName });
                     }
                 } catch (e) {
                     console.error('[Cards] Failed to save name:', e);

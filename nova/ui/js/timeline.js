@@ -126,19 +126,19 @@ async function initTimeline() {
 }
 
 /**
- * Query for entity metadata (Descriptors) on connect
- * Architecture: Use query API to fetch metadata needed for shields
+ * Query for entity metadata (Descriptors) on connect.
+ * Fetches the last loadWindowSeconds (default 120s) of metadata.
  */
 function queryEntityMetadata() {
     if (!window.wsState?.connected) return;
     
-    // Query all Descriptors from the last 24 hours (they're rare)
-    const nowMs = Date.now();
-    const oneDayAgoMs = nowMs - (24 * 60 * 60 * 1000);
+    var loadWindowMs = 120 * 1000;  // default 120s, matches config.cleanupWindowSeconds
+    var nowMs = Date.now();
+    var startMs = nowMs - loadWindowMs;
     
     const request = {
         type: 'query',
-        startTime: oneDayAgoMs * 1000,  // Microseconds
+        startTime: startMs * 1000,  // Microseconds
         stopTime: nowMs * 1000,
         timebase: timeline.timebase,
         filters: {
@@ -147,7 +147,7 @@ function queryEntityMetadata() {
     };
     
     window.sendWebSocketMessage(request);
-    console.log('[Timeline] Queried entity metadata');
+    console.log('[Timeline] Queried entity metadata (last ' + (loadWindowMs / 1000) + 's)');
 }
 
 function handlePlayPause() {

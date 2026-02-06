@@ -20,8 +20,10 @@ function initStreams() {
     console.log('[Streams] Initialized');
 }
 
+var _streamsPresLoaded = false;
+
 /**
- * Load streams from API
+ * Load streams from API and register in shields.byKey for unified name/presentation handling.
  */
 async function loadStreams() {
     try {
@@ -33,6 +35,26 @@ async function loadStreams() {
         streams.definitions.clear();
         for (var stream of data.streams) {
             streams.definitions.set(stream.streamId, stream);
+            
+            // Register in shields.byKey so presentation overrides, rename, etc. all work
+            var entityKey = 'stream|streams|' + stream.streamId;
+            if (!window.shields?.byKey?.has(entityKey)) {
+                var entity = {
+                    key: entityKey,
+                    systemId: 'stream',
+                    containerId: 'streams',
+                    uniqueId: stream.streamId,
+                    displayName: stream.name,
+                    entityType: 'stream'
+                };
+                window.shields?.byKey?.set(entityKey, entity);
+            }
+        }
+        
+        // Apply presentation overrides once after first load (restores saved displayNames)
+        if (!_streamsPresLoaded && streams.definitions.size > 0 && window.applyPresentationOverrides) {
+            _streamsPresLoaded = true;
+            await window.applyPresentationOverrides();
         }
         
         renderStreamsList();
@@ -61,11 +83,13 @@ function renderStreamsList() {
     streams.definitions.forEach(function(stream) {
         var statusClass = stream.running ? 'online' : 'offline';
         var bindIcon = stream.bound ? ' 🔗' : '';
+        var entityKey = 'stream|streams|' + stream.streamId;
+        var shieldName = window.getDisplayName ? window.getDisplayName(entityKey) : stream.name;
         
         html += '<div class="shield-item" data-key="stream-' + stream.streamId + '" ';
-        html += 'onclick="openStreamCard(\'' + stream.streamId + '\')">';
+        html += 'onclick="openStreamCard(\'' + stream.streamId + '\')">'; 
         html += '<span class="shield-icon">' + streamIcon + '</span>';
-        html += '<span class="shield-name">' + escapeHtml(stream.name) + bindIcon + '</span>';
+        html += '<span class="shield-name">' + escapeHtml(shieldName) + bindIcon + '</span>';
         html += '<span class="shield-status ' + statusClass + '"></span>';
         html += '</div>';
     });
@@ -123,6 +147,8 @@ function openSetupStreamsCard() {
 function openStreamCard(streamId) {
     var stream = streams.definitions.get(streamId);
     if (!stream) return;
+    
+    var entityKey = 'stream|streams|' + streamId;
     
     var entity = {
         systemId: 'stream',
@@ -274,7 +300,6 @@ function refreshStreamCard(streamId) {
     var entityKey = 'stream|streams|' + streamId;
     var uiData = window.cards?.uiState?.get(entityKey);
     if (uiData) {
-        // Update entity reference with fresh stream data
         uiData._entity = Object.assign({}, uiData._entity, stream, {
             systemId: 'stream',
             containerId: 'streams',
@@ -301,6 +326,7 @@ function escapeHtml(text) {
 // Exports
 window.initStreams = initStreams;
 window.streams = streams;
+window.renderStreamsList = renderStreamsList;
 window.openSetupStreamsCard = openSetupStreamsCard;
 window.openStreamCard = openStreamCard;
 window.createStream = createStream;

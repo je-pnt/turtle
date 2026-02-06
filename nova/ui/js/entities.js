@@ -11,17 +11,51 @@
 
 // State
 const shields = {
-    byKey: new Map(),      // key → {key, displayName, systemId, containerId, uniqueId}
+    byKey: new Map(),      // key → {key, systemId, containerId, uniqueId, entityType, lastSeenUs}
     tree: new Map(),       // systemId → containerId → uniqueId → entity
+    presentation: new Map(), // key → {displayName, color, scale, modelRef, ...} from presentation API
     selected: null,
-    onlineWindowUs: 5 * 1_000_000,   // default 5s in microseconds, overwritten by config
-    cleanupWindowUs: 120 * 1_000_000  // default 120s in microseconds, overwritten by config
+    onlineWindowUs: 5 * 1_000_000   // default 5s in microseconds, overwritten by config
 };
+
+/**
+ * Get display name for any entity key.
+ * Priority: presentation override > descriptor displayName > uniqueId
+ * This is the ONLY place display names are resolved.
+ */
+function getDisplayName(key) {
+    var pres = shields.presentation.get(key);
+    if (pres && pres.displayName) return pres.displayName;
+    var entity = shields.byKey.get(key);
+    if (entity) return entity.displayName || entity.uniqueId;
+    return key.split('|').pop();
+}
+
+/**
+ * Get full presentation overrides for an entity key.
+ * Returns {} if none set. Used by cards, map, etc.
+ */
+function getPresentation(key) {
+    return shields.presentation.get(key) || {};
+}
+
+/**
+ * Get resolved card color for an entity key.
+ * Priority: presentation override color (RGB→hex) > manifest fallback
+ */
+function getCardColor(key, fallbackHex) {
+    var pres = shields.presentation.get(key);
+    if (pres && Array.isArray(pres.color) && pres.color.length >= 3) {
+        var r = Math.max(0, Math.min(255, Math.round(pres.color[0])));
+        var g = Math.max(0, Math.min(255, Math.round(pres.color[1])));
+        var b = Math.max(0, Math.min(255, Math.round(pres.color[2])));
+        return '#' + [r, g, b].map(function(x) { return x.toString(16).padStart(2, '0'); }).join('');
+    }
+    return fallbackHex || '#00d4ff';
+}
 
 // Initialize
 function initEntities() {
-    // Load config thresholds (set by initTimeline from /config response)
-    // Thresholds are applied when config arrives via applyActivityConfig()
     setInterval(updateOnlineStatuses, 1000);
     console.log('[Shields] Initialized');
 }
@@ -34,10 +68,7 @@ function applyActivityConfig(config) {
     if (config.onlineWindowSeconds) {
         shields.onlineWindowUs = config.onlineWindowSeconds * 1_000_000;
     }
-    if (config.cleanupWindowSeconds) {
-        shields.cleanupWindowUs = config.cleanupWindowSeconds * 1_000_000;
-    }
-    console.log('[Shields] Activity config: online=' + (shields.onlineWindowUs / 1_000_000) + 's, cleanup=' + (shields.cleanupWindowUs / 1_000_000) + 's');
+    console.log('[Shields] Activity config: online=' + (shields.onlineWindowUs / 1_000_000) + 's');
 }
 
 // Process event - SINGLE PATH
@@ -62,21 +93,15 @@ function processEntityEvent(event) {
     // Step 4: Build key
     var key = sysId + '|' + contId + '|' + uniqId;
     
-    // Step 5: Create shield only from Descriptor metadata events
+    // Step 5: Handle Descriptor metadata events — create or update shield
     if (lane === 'metadata' && msgType && msgType.endsWith('Descriptor')) {        
-        // Get displayName from payload, fallback to uniqueId
-        var displayName = uniqId;
-        if (event.payload && event.payload.displayName) {
-            displayName = event.payload.displayName;
-        }
-        
-        // Create entity object
+        // Store raw descriptor data — presentation layer is separate
         var entity = {
             key: key,
             systemId: sysId,
             containerId: contId,
             uniqueId: uniqId,
-            displayName: displayName,
+            displayName: (event.payload && event.payload.displayName) ? event.payload.displayName : uniqId,
             entityType: event.payload ? event.payload.entityType : null,
             lastSeenUs: parseTimeToUs(event.sourceTruthTime || event.canonicalTruthTime)
         };
@@ -109,7 +134,33 @@ function processEntityEvent(event) {
         if (newTimeUs) {
             existing.lastSeenUs = newTimeUs;
         }
+        return;
     }
+    
+    // Step 7: Unknown entity — create placeholder shield
+    var placeholder = {
+        key: key,
+        systemId: sysId,
+        containerId: contId,
+        uniqueId: uniqId,
+        displayName: uniqId,
+        entityType: null,
+        lastSeenUs: parseTimeToUs(event.sourceTruthTime || event.canonicalTruthTime)
+    };
+    
+    shields.byKey.set(key, placeholder);
+    
+    if (!shields.tree.has(sysId)) {
+        shields.tree.set(sysId, new Map());
+    }
+    var containers = shields.tree.get(sysId);
+    if (!containers.has(contId)) {
+        containers.set(contId, new Map());
+    }
+    containers.get(contId).set(uniqId, placeholder);
+    
+    renderShields();
+    console.log('[Shields] Created placeholder for unknown entity:', key);
 }
 
 // Select entity and show detailed panel
@@ -169,49 +220,10 @@ function isEntityOnline(entity) {
     return (baseline - entity.lastSeenUs) < shields.onlineWindowUs;
 }
 
-// Cleanup check — entity should be removed from UI
-function shouldCleanup(entity) {
-    if (!entity.lastSeenUs) return false;
-    var baseline = getActivityBaseline();
-    return (baseline - entity.lastSeenUs) > shields.cleanupWindowUs;
-}
-
 // Expose for cards to use
 window.isEntityOnline = isEntityOnline;
 
 function updateOnlineStatuses() {
-    // Cleanup stale entities
-    var staleKeys = [];
-    shields.byKey.forEach(function(entity, key) {
-        if (shouldCleanup(entity)) {
-            staleKeys.push(key);
-        }
-    });
-    if (staleKeys.length > 0) {
-        for (var i = 0; i < staleKeys.length; i++) {
-            var staleKey = staleKeys[i];
-            var entity = shields.byKey.get(staleKey);
-            shields.byKey.delete(staleKey);
-            // Remove from tree
-            if (entity) {
-                var containers = shields.tree.get(entity.systemId);
-                if (containers) {
-                    var entities = containers.get(entity.containerId);
-                    if (entities) {
-                        entities.delete(entity.uniqueId);
-                        if (entities.size === 0) containers.delete(entity.containerId);
-                    }
-                    if (containers.size === 0) shields.tree.delete(entity.systemId);
-                }
-            }
-            // Also close the corresponding card
-            if (window.closeCard) {
-                window.closeCard(staleKey);
-            }
-        }
-        renderShields();
-    }
-
     // Update shield indicators
     var indicators = document.querySelectorAll('.shield-status');
     indicators.forEach(function(indicator) {
@@ -268,7 +280,7 @@ function renderShields() {
                 html += 'data-key="' + entity.key + '" ';
                 html += 'onclick="selectEntity(\'' + entity.key + '\')">';
                 html += '<span class="shield-icon">' + icon + '</span>';
-                html += '<span class="shield-name">' + entity.displayName + '</span>';
+                html += '<span class="shield-name">' + getDisplayName(entity.key) + '</span>';
                 html += '<span class="shield-status ' + (isOnline ? 'online' : 'offline') + '"></span>';
                 html += '</div>';
             });
@@ -336,24 +348,20 @@ async function applyPresentationOverrides() {
             var data = await response.json();
             var overrides = data.overrides || {};
             
-            // Apply displayName overrides to matching shields
+            // Store in presentation layer (separate from entity data)
             for (var uniqueId in overrides) {
                 var key = scopeId + '|' + uniqueId;
-                var entity = shields.byKey.get(key);
-                if (entity && overrides[uniqueId].displayName) {
-                    entity.displayName = overrides[uniqueId].displayName;
-                }
+                shields.presentation.set(key, overrides[uniqueId]);
             }
         } catch (e) {
             console.warn('[Shields] Failed to load presentation for scope:', scopeId, e);
         }
     }
     
-    // Re-render with updated names
-    if (shields.byKey.size > 0) {
-        renderShields();
-        if (window.renderAllCards) window.renderAllCards();
-    }
+    // Re-render everything with presentation applied
+    renderShields();
+    if (window.renderAllCards) window.renderAllCards();
+    if (window.renderStreamsList) window.renderStreamsList();
     console.log('[Shields] Presentation overrides applied');
 }
 
@@ -368,3 +376,6 @@ window.applyActivityConfig = applyActivityConfig;
 window.applyPresentationOverrides = applyPresentationOverrides;
 window.renderShields = renderShields;
 window.shields = shields;
+window.getDisplayName = getDisplayName;
+window.getPresentation = getPresentation;
+window.getCardColor = getCardColor;

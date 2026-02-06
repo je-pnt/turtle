@@ -519,7 +519,12 @@ class NovaServer:
         return web.json_response({'user': user, 'message': 'Password reset successfully'})
     
     async def _serveIndexHtml(self, request: web.Request) -> web.Response:
-        """Serve index.html from UI directory"""
+        """Serve index.html from UI directory. Redirect to /login if auth enabled and not authenticated."""
+        # Server-side auth gate: prevents main page flash before JS redirect
+        if self.authManager.enabled:
+            user = self._getAuthFromCookie(request)
+            if not user:
+                raise web.HTTPFound('/login?redirect=%2F')
         uiPath = Path(__file__).parent.parent / 'ui' / 'html' / 'index.html'
         if not uiPath.exists():
             return web.Response(status=404, text='Not found')
@@ -540,7 +545,13 @@ class NovaServer:
         return web.FileResponse(uiPath)
     
     async def _serveAdminHtml(self, request: web.Request) -> web.Response:
-        """Serve admin.html"""
+        """Serve admin.html. Redirect to /login if not authenticated or not admin."""
+        if self.authManager.enabled:
+            user = self._getAuthFromCookie(request)
+            if not user:
+                raise web.HTTPFound('/login?redirect=%2Fadmin')
+            if user.get('role') != 'admin':
+                raise web.HTTPFound('/')
         uiPath = Path(__file__).parent.parent / 'ui' / 'html' / 'admin.html'
         if not uiPath.exists():
             return web.Response(status=404, text='Not found')
